@@ -42,4 +42,12 @@ public class OrderDtos {
             LocalDateTime createdAt,
             LocalDateTime paidAt) {
     }
+
+    public record OrderSummaryResponse(
+            Long id,
+            String status,
+            BigDecimal totalPrice,
+            int itemCount,
+            LocalDateTime createdAt) {
+    }
 }

@@ -15,6 +15,7 @@ import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderItemRequest;
 import com.dh.order.dto.OrderDtos.OrderItemResponse;
 import com.dh.order.dto.OrderDtos.OrderResponse;
+import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
 import com.dh.order.repository.OrderRepository;
 
 @Service
@@ -28,8 +29,9 @@ public class OrderService {
     }
 
     @Transactional
-    public OrderResponse createOrder(OrderCreateRequest request) {
+    public OrderResponse createOrder(OrderCreateRequest request, String customerEmail) {
         Order order = new Order();
+        order.setCustomerEmail(isBlank(customerEmail) ? null : customerEmail);
         order.setOrdererName(request.ordererName());
         order.setOrdererPhone(request.ordererPhone());
         order.setShippingAddress(request.shippingAddress());
@@ -55,6 +57,13 @@ public class OrderService {
         return toResponse(order);
     }
 
+    public List<OrderSummaryResponse> getMyOrders(String customerEmail) {
+        return orderRepository.findByCustomerEmailOrderByCreatedAtDesc(customerEmail).stream()
+                .map(o -> new OrderSummaryResponse(o.getId(), o.getStatus().name(), o.getTotalPrice(),
+                        o.getItems().size(), o.getCreatedAt()))
+                .toList();
+    }
+
     // 실제 PG 연동 전까지의 mock 결제 - 항상 성공 처리. 나중에 여기만 실제 PG 클라이언트 호출로 교체하면 됨.
     @Transactional
     public OrderResponse payOrder(Long id) {
@@ -66,6 +75,10 @@ public class OrderService {
         order.setStatus(OrderStatus.PAID);
         order.setPaidAt(LocalDateTime.now());
         return toResponse(order);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private OrderResponse toResponse(Order order) {

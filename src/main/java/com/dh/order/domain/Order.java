@@ -32,6 +32,10 @@ public class Order {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // 로그인한 사용자가 주문한 경우에만 채워짐(게이트웨이가 X-User-Email로 전달) - 비로그인 게스트 주문은 null
+    @Column(length = 320)
+    private String customerEmail;
+
     @Column(nullable = false, length = 100)
     private String ordererName;
 
