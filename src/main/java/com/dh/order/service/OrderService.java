@@ -1,6 +1,7 @@
 package com.dh.order.service;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -9,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.dh.order.domain.Order;
 import com.dh.order.domain.OrderItem;
+import com.dh.order.domain.OrderStatus;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderItemRequest;
 import com.dh.order.dto.OrderDtos.OrderItemResponse;
@@ -53,6 +55,19 @@ public class OrderService {
         return toResponse(order);
     }
 
+    // 실제 PG 연동 전까지의 mock 결제 - 항상 성공 처리. 나중에 여기만 실제 PG 클라이언트 호출로 교체하면 됨.
+    @Transactional
+    public OrderResponse payOrder(Long id) {
+        Order order = orderRepository.findById(id)
+                .orElseThrow(() -> new NoSuchElementException("order not found: " + id));
+        if (order.getStatus() != OrderStatus.CREATED) {
+            throw new IllegalStateException("이미 결제 처리된 주문입니다: " + id);
+        }
+        order.setStatus(OrderStatus.PAID);
+        order.setPaidAt(LocalDateTime.now());
+        return toResponse(order);
+    }
+
     private OrderResponse toResponse(Order order) {
         List<OrderItemResponse> items = order.getItems().stream()
                 .map(i -> new OrderItemResponse(i.getProductId(), i.getProductName(), i.getPrice(), i.getQuantity()))
@@ -66,6 +81,7 @@ public class OrderService {
                 order.getStatus().name(),
                 order.getTotalPrice(),
                 items,
-                order.getCreatedAt());
+                order.getCreatedAt(),
+                order.getPaidAt());
     }
 }

@@ -34,4 +34,9 @@ public class OrderController {
     public OrderResponse get(@PathVariable Long id) {
         return orderService.getOrder(id);
     }
+
+    @PostMapping("/{id}/pay")
+    public OrderResponse pay(@PathVariable Long id) {
+        return orderService.payOrder(id);
+    }
 }

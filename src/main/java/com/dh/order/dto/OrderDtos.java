@@ -39,6 +39,7 @@ public class OrderDtos {
             String status,
             BigDecimal totalPrice,
             List<OrderItemResponse> items,
-            LocalDateTime createdAt) {
+            LocalDateTime createdAt,
+            LocalDateTime paidAt) {
     }
 }
