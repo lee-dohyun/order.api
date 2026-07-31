@@ -2,7 +2,8 @@ package com.dh.order.controller;
 
 import java.util.List;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.dh.order.config.AdminJwtVerifier;
 import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderResponse;
@@ -25,12 +27,14 @@ import jakarta.validation.Valid;
 @RequestMapping("/api/orders")
 public class OrderController {
 
-    private final OrderService orderService;
-    private final String adminSecret;
+    private static final Logger logger = LoggerFactory.getLogger(OrderController.class);
 
-    public OrderController(OrderService orderService, @Value("${admin.shared-secret:}") String adminSecret) {
+    private final OrderService orderService;
+    private final AdminJwtVerifier adminJwtVerifier;
+
+    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier) {
         this.orderService = orderService;
-        this.adminSecret = adminSecret;
+        this.adminJwtVerifier = adminJwtVerifier;
     }
 
     @PostMapping
@@ -51,13 +55,18 @@ public class OrderController {
         return ResponseEntity.ok(orderService.getMyOrders(customerEmail));
     }
 
-    // admin.front 전용 전체 주문 목록. admin.front와만 공유하는 비밀값을 헤더로 요구한다.
+    // admin.front(Keycloak staff realm 로그인) 전용 전체 주문 목록. Authorization 헤더의 토큰을 직접 검증한다.
     @GetMapping
     public ResponseEntity<List<OrderAdminSummaryResponse>> getAll(
-            @RequestHeader(value = "X-Admin-Secret", required = false) String providedSecret) {
-        if (adminSecret.isBlank() || providedSecret == null || !adminSecret.equals(providedSecret)) {
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        String token = authHeader != null && authHeader.startsWith("Bearer ")
+                ? authHeader.substring("Bearer ".length())
+                : null;
+        String adminEmail = adminJwtVerifier.verify(token);
+        if (adminEmail == null) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
+        logger.info("admin order list viewed by {}", adminEmail);
         return ResponseEntity.ok(orderService.getAllOrders());
     }
 
