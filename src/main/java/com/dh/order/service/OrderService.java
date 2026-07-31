@@ -15,6 +15,7 @@ import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderItemRequest;
 import com.dh.order.dto.OrderDtos.OrderItemResponse;
 import com.dh.order.dto.OrderDtos.OrderResponse;
+import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
 import com.dh.order.repository.OrderRepository;
 
@@ -61,6 +62,14 @@ public class OrderService {
         return orderRepository.findByCustomerEmailOrderByCreatedAtDesc(customerEmail).stream()
                 .map(o -> new OrderSummaryResponse(o.getId(), o.getStatus().name(), o.getTotalPrice(),
                         o.getItems().size(), o.getCreatedAt()))
+                .toList();
+    }
+
+    public List<OrderAdminSummaryResponse> getAllOrders() {
+        return orderRepository.findAllByOrderByCreatedAtDesc().stream()
+                .map(o -> new OrderAdminSummaryResponse(o.getId(), o.getCustomerEmail(), o.getOrdererName(),
+                        o.getOrdererPhone(), o.getStatus().name(), o.getTotalPrice(), o.getItems().size(),
+                        o.getCreatedAt()))
                 .toList();
     }
 

@@ -9,4 +9,6 @@ import com.dh.order.domain.Order;
 public interface OrderRepository extends JpaRepository<Order, Long> {
 
     List<Order> findByCustomerEmailOrderByCreatedAtDesc(String customerEmail);
+
+    List<Order> findAllByOrderByCreatedAtDesc();
 }

@@ -2,6 +2,7 @@ package com.dh.order.controller;
 
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
@@ -24,9 +26,11 @@ import jakarta.validation.Valid;
 public class OrderController {
 
     private final OrderService orderService;
+    private final String adminSecret;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(OrderService orderService, @Value("${admin.shared-secret:}") String adminSecret) {
         this.orderService = orderService;
+        this.adminSecret = adminSecret;
     }
 
     @PostMapping
@@ -45,6 +49,16 @@ public class OrderController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         return ResponseEntity.ok(orderService.getMyOrders(customerEmail));
+    }
+
+    // admin.front 전용 전체 주문 목록. admin.front와만 공유하는 비밀값을 헤더로 요구한다.
+    @GetMapping
+    public ResponseEntity<List<OrderAdminSummaryResponse>> getAll(
+            @RequestHeader(value = "X-Admin-Secret", required = false) String providedSecret) {
+        if (adminSecret.isBlank() || providedSecret == null || !adminSecret.equals(providedSecret)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(orderService.getAllOrders());
     }
 
     @GetMapping("/{id}")

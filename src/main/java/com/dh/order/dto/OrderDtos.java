@@ -50,4 +50,15 @@ public class OrderDtos {
             int itemCount,
             LocalDateTime createdAt) {
     }
+
+    public record OrderAdminSummaryResponse(
+            Long id,
+            String customerEmail,
+            String ordererName,
+            String ordererPhone,
+            String status,
+            BigDecimal totalPrice,
+            int itemCount,
+            LocalDateTime createdAt) {
+    }
 }
