@@ -24,9 +24,11 @@ import com.dh.order.repository.OrderRepository;
 public class OrderService {
 
     private final OrderRepository orderRepository;
+    private final OrderNotificationService notificationService;
 
-    public OrderService(OrderRepository orderRepository) {
+    public OrderService(OrderRepository orderRepository, OrderNotificationService notificationService) {
         this.orderRepository = orderRepository;
+        this.notificationService = notificationService;
     }
 
     @Transactional
@@ -83,6 +85,7 @@ public class OrderService {
         }
         order.setStatus(OrderStatus.PAID);
         order.setPaidAt(LocalDateTime.now());
+        notificationService.notifyPaid(order);
         return toResponse(order);
     }
 
