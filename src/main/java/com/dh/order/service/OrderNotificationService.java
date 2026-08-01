@@ -27,6 +27,7 @@ public class OrderNotificationService {
         }
         try {
             SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom("customer-service@leedohyun.com");
             message.setTo(order.getCustomerEmail());
             message.setSubject("[주문 결제 완료] 주문 #" + order.getId());
             message.setText(
