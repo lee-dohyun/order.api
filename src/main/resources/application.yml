@@ -32,3 +32,6 @@ server:
 
 admin:
   staff-realm-url: ${STAFF_REALM_URL:http://keycloak-service.keycloak.svc.cluster.local/realms/staff}
+
+app:
+  mail-from: ${MAIL_FROM:customer-service@posselect.com}
