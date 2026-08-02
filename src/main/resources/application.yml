@@ -30,6 +30,15 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
 admin:
   staff-realm-url: ${STAFF_REALM_URL:http://keycloak-service.keycloak.svc.cluster.local/realms/staff}
 
