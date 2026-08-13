@@ -34,6 +34,10 @@ public class OrderItem {
     @Column(nullable = false)
     private Long productId;
 
+    // product.api의 SKU(variant) 식별자 - 재고 차감은 이 값 기준
+    @Column(name = "variant_id", nullable = false)
+    private Long variantId;
+
     @Column(nullable = false, length = 200)
     private String productName;
 

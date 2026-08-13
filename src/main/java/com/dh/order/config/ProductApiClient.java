@@ -34,7 +34,7 @@ public class ProductApiClient {
     /** @throws IllegalStateException 재고 부족이거나 product.api 호출에 실패하면 (ApiExceptionHandler가 409로 응답) */
     public void deductInventory(Long orderId, List<OrderItem> items) {
         List<Map<String, Object>> itemPayload = items.stream()
-                .map(item -> Map.<String, Object>of("productId", item.getProductId(), "quantity", item.getQuantity()))
+                .map(item -> Map.<String, Object>of("variantId", item.getVariantId(), "quantity", item.getQuantity()))
                 .toList();
         Map<String, Object> body = Map.of("orderId", orderId, "items", itemPayload);
 

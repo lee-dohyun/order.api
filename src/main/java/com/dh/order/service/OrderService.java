@@ -62,6 +62,7 @@ public class OrderService {
         for (OrderItemRequest itemRequest : request.items()) {
             OrderItem item = new OrderItem();
             item.setProductId(itemRequest.productId());
+            item.setVariantId(itemRequest.variantId());
             item.setProductName(itemRequest.productName());
             item.setPrice(itemRequest.price());
             item.setQuantity(itemRequest.quantity());
@@ -153,7 +154,8 @@ public class OrderService {
 
     private OrderResponse toResponse(Order order) {
         List<OrderItemResponse> items = order.getItems().stream()
-                .map(i -> new OrderItemResponse(i.getProductId(), i.getProductName(), i.getPrice(), i.getQuantity()))
+                .map(i -> new OrderItemResponse(
+                        i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity()))
                 .toList();
 
         return new OrderResponse(

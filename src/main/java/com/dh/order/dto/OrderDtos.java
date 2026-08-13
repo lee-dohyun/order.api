@@ -13,9 +13,11 @@ import jakarta.validation.constraints.NotNull;
 
 public class OrderDtos {
 
-    // order-api는 catalogdb에 접근하지 않으므로, 주문 시점의 상품명/가격은 클라이언트(카트)가 스냅샷으로 함께 보냄
+    // order-api는 catalogdb에 접근하지 않으므로, 주문 시점의 상품명/가격은 클라이언트(카트)가 스냅샷으로
+    // 함께 보냄. variantId는 결제 확정 시 product.api 재고 차감의 기준 키.
     public record OrderItemRequest(
             @NotNull Long productId,
+            @NotNull Long variantId,
             @NotBlank String productName,
             @NotNull @DecimalMin(value = "0", inclusive = true) BigDecimal price,
             @NotNull @Min(1) Integer quantity) {
@@ -33,7 +35,8 @@ public class OrderDtos {
             @NotEmpty @Valid List<OrderItemRequest> items) {
     }
 
-    public record OrderItemResponse(Long productId, String productName, BigDecimal price, Integer quantity) {
+    public record OrderItemResponse(
+            Long productId, Long variantId, String productName, BigDecimal price, Integer quantity) {
     }
 
     public record OrderResponse(
