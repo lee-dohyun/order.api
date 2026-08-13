@@ -8,6 +8,7 @@ import java.util.NoSuchElementException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.dh.order.config.ProductApiClient;
 import com.dh.order.domain.Order;
 import com.dh.order.domain.OrderItem;
 import com.dh.order.domain.OrderStatus;
@@ -31,14 +32,17 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final ShipmentRepository shipmentRepository;
     private final OrderNotificationService notificationService;
+    private final ProductApiClient productApiClient;
 
     public OrderService(
             OrderRepository orderRepository,
             ShipmentRepository shipmentRepository,
-            OrderNotificationService notificationService) {
+            OrderNotificationService notificationService,
+            ProductApiClient productApiClient) {
         this.orderRepository = orderRepository;
         this.shipmentRepository = shipmentRepository;
         this.notificationService = notificationService;
+        this.productApiClient = productApiClient;
     }
 
     @Transactional
@@ -98,6 +102,8 @@ public class OrderService {
         if (order.getStatus() != OrderStatus.CREATED) {
             throw new IllegalStateException("이미 결제 처리된 주문입니다: " + id);
         }
+        // 재고 차감 실패(부족/product.api 오류) 시 예외가 트랜잭션을 롤백시켜 결제 확정 전으로 되돌린다.
+        productApiClient.deductInventory(order.getId(), order.getItems());
         order.setStatus(OrderStatus.PAID);
         order.setPaidAt(LocalDateTime.now());
         notificationService.notifyPaid(order);
