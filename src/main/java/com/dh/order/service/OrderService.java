@@ -113,7 +113,7 @@ public class OrderService {
         Order order = orderRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("order not found: " + id));
         if (order.getStatus() != OrderStatus.CREATED) {
-            throw new IllegalStateException("이미 결제 처리된 주문입니다: " + id);
+            throw new OrderStateException("order.alreadyPaid", String.valueOf(id));
         }
         // 재고 차감 실패(부족/product.api 오류) 시 예외가 트랜잭션을 롤백시켜 결제 확정 전으로 되돌린다.
         productApiClient.deductInventory(order.getId(), order.getItems());
