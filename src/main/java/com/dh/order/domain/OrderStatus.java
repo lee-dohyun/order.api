@@ -2,5 +2,10 @@ package com.dh.order.domain;
 
 public enum OrderStatus {
     CREATED,
-    PAID
+    PAID,
+    PREPARING,
+    SHIPPED,
+    DELIVERED,
+    CANCELLED,
+    REFUNDED
 }
