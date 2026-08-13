@@ -21,7 +21,13 @@ import com.dh.order.dto.OrderDtos.OrderItemResponse;
 import com.dh.order.dto.OrderDtos.OrderResponse;
 import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
+import com.dh.order.dto.OrderDtos.RefundRequest;
+import com.dh.order.dto.OrderDtos.RefundResponse;
 import com.dh.order.dto.OrderDtos.ShipmentResponse;
+import com.dh.order.payment.Payment;
+import com.dh.order.payment.PaymentRepository;
+import com.dh.order.payment.Refund;
+import com.dh.order.payment.RefundRepository;
 import com.dh.order.repository.OrderRepository;
 import com.dh.order.repository.ShipmentRepository;
 
@@ -31,16 +37,22 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final ShipmentRepository shipmentRepository;
+    private final PaymentRepository paymentRepository;
+    private final RefundRepository refundRepository;
     private final OrderNotificationService notificationService;
     private final ProductApiClient productApiClient;
 
     public OrderService(
             OrderRepository orderRepository,
             ShipmentRepository shipmentRepository,
+            PaymentRepository paymentRepository,
+            RefundRepository refundRepository,
             OrderNotificationService notificationService,
             ProductApiClient productApiClient) {
         this.orderRepository = orderRepository;
         this.shipmentRepository = shipmentRepository;
+        this.paymentRepository = paymentRepository;
+        this.refundRepository = refundRepository;
         this.notificationService = notificationService;
         this.productApiClient = productApiClient;
     }
@@ -107,8 +119,26 @@ public class OrderService {
         productApiClient.deductInventory(order.getId(), order.getItems());
         order.setStatus(OrderStatus.PAID);
         order.setPaidAt(LocalDateTime.now());
+        paymentRepository.save(new Payment(order, order.getTotalPrice(), "MOCK"));
         notificationService.notifyPaid(order);
         return toResponse(order);
+    }
+
+    /** admin이 환불 처리 - 결제가 존재하는 주문(PAID 이후)만 가능, 전액 환불만 지원한다. */
+    @Transactional
+    public RefundResponse refundOrder(Long orderId, RefundRequest request) {
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
+        if (order.getStatus() == OrderStatus.CREATED || order.getStatus() == OrderStatus.REFUNDED) {
+            throw new IllegalStateException("환불할 수 없는 주문 상태입니다: " + orderId);
+        }
+        Payment payment = paymentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new NoSuchElementException("payment not found for order: " + orderId));
+
+        Refund refund = new Refund(payment, payment.getAmount(), request.reason());
+        refundRepository.save(refund);
+        order.setStatus(OrderStatus.REFUNDED);
+        return toRefundResponse(order, refund);
     }
 
     /** admin이 운송장을 등록 - PAID 주문만 가능, 등록 즉시 SHIPPED로 전이한다. */
@@ -173,6 +203,12 @@ public class OrderService {
                 items,
                 order.getCreatedAt(),
                 order.getPaidAt());
+    }
+
+    private RefundResponse toRefundResponse(Order order, Refund refund) {
+        return new RefundResponse(
+                order.getId(), refund.getAmount(), refund.getReason(), refund.getStatus().name(),
+                refund.getRefundedAt());
     }
 
     private ShipmentResponse toShipmentResponse(Shipment shipment) {

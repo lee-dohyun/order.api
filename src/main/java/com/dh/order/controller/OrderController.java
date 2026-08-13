@@ -21,6 +21,8 @@ import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
+import com.dh.order.dto.OrderDtos.RefundRequest;
+import com.dh.order.dto.OrderDtos.RefundResponse;
 import com.dh.order.dto.OrderDtos.ShipmentResponse;
 import com.dh.order.service.OrderService;
 
@@ -111,6 +113,18 @@ public class OrderController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         return ResponseEntity.ok(orderService.getShipment(id));
+    }
+
+    // admin.front 전용 - 전액 환불 처리, 결제가 존재하는 주문 상태를 REFUNDED로 전이한다.
+    @PostMapping("/{id}/refund")
+    public ResponseEntity<RefundResponse> refund(
+            @PathVariable Long id,
+            @RequestBody RefundRequest request,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (verifyAdmin(authHeader) == null) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(orderService.refundOrder(id, request));
     }
 
     private String verifyAdmin(String authHeader) {

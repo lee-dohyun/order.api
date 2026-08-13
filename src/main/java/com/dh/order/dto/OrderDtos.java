@@ -70,6 +70,17 @@ public class OrderDtos {
             LocalDateTime deliveredAt) {
     }
 
+    public record RefundRequest(String reason) {
+    }
+
+    public record RefundResponse(
+            Long orderId,
+            BigDecimal amount,
+            String reason,
+            String status,
+            LocalDateTime refundedAt) {
+    }
+
     public record OrderSummaryResponse(
             Long id,
             String status,
