@@ -11,23 +11,33 @@ import org.springframework.transaction.annotation.Transactional;
 import com.dh.order.domain.Order;
 import com.dh.order.domain.OrderItem;
 import com.dh.order.domain.OrderStatus;
+import com.dh.order.domain.Shipment;
+import com.dh.order.domain.ShipmentStatus;
+import com.dh.order.dto.OrderDtos.CreateShipmentRequest;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderItemRequest;
 import com.dh.order.dto.OrderDtos.OrderItemResponse;
 import com.dh.order.dto.OrderDtos.OrderResponse;
 import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
+import com.dh.order.dto.OrderDtos.ShipmentResponse;
 import com.dh.order.repository.OrderRepository;
+import com.dh.order.repository.ShipmentRepository;
 
 @Service
 @Transactional(readOnly = true)
 public class OrderService {
 
     private final OrderRepository orderRepository;
+    private final ShipmentRepository shipmentRepository;
     private final OrderNotificationService notificationService;
 
-    public OrderService(OrderRepository orderRepository, OrderNotificationService notificationService) {
+    public OrderService(
+            OrderRepository orderRepository,
+            ShipmentRepository shipmentRepository,
+            OrderNotificationService notificationService) {
         this.orderRepository = orderRepository;
+        this.shipmentRepository = shipmentRepository;
         this.notificationService = notificationService;
     }
 
@@ -38,6 +48,11 @@ public class OrderService {
         order.setOrdererName(request.ordererName());
         order.setOrdererPhone(request.ordererPhone());
         order.setShippingAddress(request.shippingAddress());
+        order.setRecipientName(request.recipientName());
+        order.setRecipientPhone(request.recipientPhone());
+        order.setZipCode(request.zipCode());
+        order.setAddress1(request.address1());
+        order.setAddress2(request.address2());
 
         BigDecimal total = BigDecimal.ZERO;
         for (OrderItemRequest itemRequest : request.items()) {
@@ -89,6 +104,43 @@ public class OrderService {
         return toResponse(order);
     }
 
+    /** admin이 운송장을 등록 - PAID 주문만 가능, 등록 즉시 SHIPPED로 전이한다. */
+    @Transactional
+    public ShipmentResponse createShipment(Long orderId, CreateShipmentRequest request) {
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
+        if (order.getStatus() != OrderStatus.PAID) {
+            throw new IllegalStateException("결제 완료 상태의 주문만 배송을 등록할 수 있습니다: " + orderId);
+        }
+        if (shipmentRepository.findByOrderId(orderId).isPresent()) {
+            throw new IllegalStateException("이미 배송이 등록된 주문입니다: " + orderId);
+        }
+
+        Shipment shipment = new Shipment(order, request.carrier(), request.trackingNumber());
+        shipmentRepository.save(shipment);
+        order.setStatus(OrderStatus.SHIPPED);
+        return toShipmentResponse(shipment);
+    }
+
+    /** admin이 배송 완료 처리 - SHIPPED 상태만 가능. */
+    @Transactional
+    public ShipmentResponse markDelivered(Long orderId) {
+        Shipment shipment = shipmentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new NoSuchElementException("shipment not found for order: " + orderId));
+        if (shipment.getStatus() != ShipmentStatus.SHIPPED) {
+            throw new IllegalStateException("배송중 상태의 주문만 배송완료로 처리할 수 있습니다: " + orderId);
+        }
+        shipment.markDelivered();
+        shipment.getOrder().setStatus(OrderStatus.DELIVERED);
+        return toShipmentResponse(shipment);
+    }
+
+    public ShipmentResponse getShipment(Long orderId) {
+        Shipment shipment = shipmentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new NoSuchElementException("shipment not found for order: " + orderId));
+        return toShipmentResponse(shipment);
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
     }
@@ -103,10 +155,25 @@ public class OrderService {
                 order.getOrdererName(),
                 order.getOrdererPhone(),
                 order.getShippingAddress(),
+                order.getRecipientName(),
+                order.getRecipientPhone(),
+                order.getZipCode(),
+                order.getAddress1(),
+                order.getAddress2(),
                 order.getStatus().name(),
                 order.getTotalPrice(),
                 items,
                 order.getCreatedAt(),
                 order.getPaidAt());
+    }
+
+    private ShipmentResponse toShipmentResponse(Shipment shipment) {
+        return new ShipmentResponse(
+                shipment.getOrder().getId(),
+                shipment.getCarrier(),
+                shipment.getTrackingNumber(),
+                shipment.getStatus().name(),
+                shipment.getShippedAt(),
+                shipment.getDeliveredAt());
     }
 }

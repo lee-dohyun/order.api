@@ -25,6 +25,11 @@ public class OrderDtos {
             @NotBlank String ordererName,
             @NotBlank String ordererPhone,
             @NotBlank String shippingAddress,
+            String recipientName,
+            String recipientPhone,
+            String zipCode,
+            String address1,
+            String address2,
             @NotEmpty @Valid List<OrderItemRequest> items) {
     }
 
@@ -36,11 +41,30 @@ public class OrderDtos {
             String ordererName,
             String ordererPhone,
             String shippingAddress,
+            String recipientName,
+            String recipientPhone,
+            String zipCode,
+            String address1,
+            String address2,
             String status,
             BigDecimal totalPrice,
             List<OrderItemResponse> items,
             LocalDateTime createdAt,
             LocalDateTime paidAt) {
+    }
+
+    public record CreateShipmentRequest(
+            @NotBlank String carrier,
+            @NotBlank String trackingNumber) {
+    }
+
+    public record ShipmentResponse(
+            Long orderId,
+            String carrier,
+            String trackingNumber,
+            String status,
+            LocalDateTime shippedAt,
+            LocalDateTime deliveredAt) {
     }
 
     public record OrderSummaryResponse(

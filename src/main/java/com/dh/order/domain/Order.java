@@ -45,6 +45,23 @@ public class Order {
     @Column(nullable = false, length = 300)
     private String shippingAddress;
 
+    // 구조화된 배송지 스냅샷 (선택). shippingAddress는 기존 체크아웃 호환을 위해 계속 필수로 남겨두고,
+    // 저장된 배송지(member_addresses)를 선택해 주문하는 흐름이 붙으면 이쪽이 채워진다.
+    @Column(length = 50)
+    private String recipientName;
+
+    @Column(length = 30)
+    private String recipientPhone;
+
+    @Column(length = 10)
+    private String zipCode;
+
+    @Column(length = 200)
+    private String address1;
+
+    @Column(length = 200)
+    private String address2;
+
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal totalPrice;
 
