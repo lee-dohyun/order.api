@@ -23,6 +23,7 @@ import com.dh.order.dto.OrderDtos.OrderResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
 import com.dh.order.dto.OrderDtos.RefundRequest;
 import com.dh.order.dto.OrderDtos.RefundResponse;
+import com.dh.order.dto.OrderDtos.Requester;
 import com.dh.order.dto.OrderDtos.ShipmentResponse;
 import com.dh.order.service.OrderService;
 
@@ -33,6 +34,12 @@ import jakarta.validation.Valid;
 public class OrderController {
 
     private static final Logger logger = LoggerFactory.getLogger(OrderController.class);
+
+    /** 게이트웨이가 JWT 검증 후에만 주입하는 신원 헤더. 클라이언트가 보낸 동명 헤더는 게이트웨이가 먼저 제거한다. */
+    private static final String USER_ID_HEADER = "X-User-Id";
+    private static final String USER_EMAIL_HEADER = "X-User-Email";
+    /** 게스트 주문 접근 토큰. 주문 생성 응답으로 받은 값을 클라이언트가 되돌려 보낸다. */
+    private static final String GUEST_TOKEN_HEADER = "X-Order-Guest-Token";
 
     private final OrderService orderService;
     private final AdminJwtVerifier adminJwtVerifier;
@@ -45,19 +52,23 @@ public class OrderController {
     @PostMapping
     public ResponseEntity<OrderResponse> create(
             @Valid @RequestBody OrderCreateRequest request,
-            @RequestHeader(value = "X-User-Email", required = false) String customerEmail) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(request, customerEmail));
+            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail) {
+        Requester requester = Requester.of(userId, userEmail, null, false);
+        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(request, requester));
     }
 
-    // 로그인한 사용자 본인의 주문 목록. 게이트웨이가 로그인 시에만 X-User-Email을 넣어주므로,
+    // 로그인한 사용자 본인의 주문 목록. 게이트웨이가 로그인 시에만 신원 헤더를 넣어주므로,
     // 비로그인 상태로 호출되면 헤더가 없어 401을 응답한다.
     @GetMapping("/mine")
     public ResponseEntity<List<OrderSummaryResponse>> getMine(
-            @RequestHeader(value = "X-User-Email", required = false) String customerEmail) {
-        if (customerEmail == null || customerEmail.isBlank()) {
+            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail) {
+        Requester requester = Requester.of(userId, userEmail, null, false);
+        if (requester.userId() == null && requester.userEmail() == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return ResponseEntity.ok(orderService.getMyOrders(customerEmail));
+        return ResponseEntity.ok(orderService.getMyOrders(requester.userId(), requester.userEmail()));
     }
 
     // admin.front(Keycloak staff realm 로그인) 전용 전체 주문 목록. Authorization 헤더의 토큰을 직접 검증한다.
@@ -72,14 +83,26 @@ public class OrderController {
         return ResponseEntity.ok(orderService.getAllOrders());
     }
 
+    // 소유자(또는 게스트 토큰 보유자, 또는 admin)만 조회할 수 있다. 접근 불가면 404다 - 주문 ID가
+    // 순번이라 403으로 구분해 주면 그것만으로 주문 건수와 유효 ID 범위가 노출된다(Redmine #214).
     @GetMapping("/{id}")
-    public OrderResponse get(@PathVariable Long id) {
-        return orderService.getOrder(id);
+    public OrderResponse get(
+            @PathVariable Long id,
+            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail,
+            @RequestHeader(value = GUEST_TOKEN_HEADER, required = false) String guestToken,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        return orderService.getOrder(id, requesterOf(userId, userEmail, guestToken, authHeader));
     }
 
     @PostMapping("/{id}/pay")
-    public OrderResponse pay(@PathVariable Long id) {
-        return orderService.payOrder(id);
+    public OrderResponse pay(
+            @PathVariable Long id,
+            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail,
+            @RequestHeader(value = GUEST_TOKEN_HEADER, required = false) String guestToken,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        return orderService.payOrder(id, requesterOf(userId, userEmail, guestToken, authHeader));
     }
 
     // admin.front(staff realm) 전용 - 운송장 등록 시 주문 상태가 PAID -> SHIPPED로 전이된다.
@@ -125,6 +148,10 @@ public class OrderController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         return ResponseEntity.ok(orderService.refundOrder(id, request));
+    }
+
+    private Requester requesterOf(String userId, String userEmail, String guestToken, String authHeader) {
+        return Requester.of(userId, userEmail, guestToken, verifyAdmin(authHeader) != null);
     }
 
     private String verifyAdmin(String authHeader) {

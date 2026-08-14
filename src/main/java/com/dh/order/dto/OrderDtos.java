@@ -39,6 +39,25 @@ public class OrderDtos {
             Long productId, Long variantId, String productName, BigDecimal price, Integer quantity) {
     }
 
+    /**
+     * 요청자 신원. userId/userEmail은 게이트웨이가 JWT 검증 후 주입한 헤더에서만 오고,
+     * guestToken은 주문 생성 응답을 받은 클라이언트가 되돌려 보낸다. admin은 staff realm
+     * 토큰 재검증 결과다.
+     */
+    public record Requester(String userId, String userEmail, String guestToken, boolean admin) {
+
+        public static Requester of(String userId, String userEmail, String guestToken, boolean admin) {
+            return new Requester(blankToNull(userId), blankToNull(userEmail), blankToNull(guestToken), admin);
+        }
+
+        // 게이트웨이는 클레임이 없을 때 헤더를 빈 문자열로 채운다 - ""가 소유자 키로 취급되면
+        // 클레임 없는 토큰끼리 서로의 주문에 접근할 수 있으므로 null로 정규화한다.
+        private static String blankToNull(String value) {
+            return value == null || value.isBlank() ? null : value;
+        }
+    }
+
+    /** guestToken은 주문 생성 응답에서만 채워진다 - 조회 응답에서는 항상 null이다. */
     public record OrderResponse(
             Long id,
             String ordererName,
@@ -53,7 +72,8 @@ public class OrderDtos {
             BigDecimal totalPrice,
             List<OrderItemResponse> items,
             LocalDateTime createdAt,
-            LocalDateTime paidAt) {
+            LocalDateTime paidAt,
+            String guestToken) {
     }
 
     public record CreateShipmentRequest(

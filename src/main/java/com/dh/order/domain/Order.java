@@ -32,9 +32,27 @@ public class Order {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // 로그인한 사용자가 주문한 경우에만 채워짐(게이트웨이가 X-User-Email로 전달) - 비로그인 게스트 주문은 null
+    /**
+     * 주문의 소유자. Keycloak sub(불변 UUID)이며 게이트웨이가 X-User-Id로 전달한다.
+     * 이메일은 사용자가 바꿀 수 있어서 소유자 키로 쓸 수 없다 - 조회/인가는 항상 이 값 기준.
+     * 비로그인 게스트 주문은 null이고 대신 {@link #guestToken}을 갖는다.
+     */
+    @Column(name = "customer_id", length = 36)
+    private String customerId;
+
+    /**
+     * 표시/통지용 이메일 스냅샷. 소유자 판정에 쓰지 말 것 - 단, customer_id 백필 전의
+     * 레거시 행(customer_id가 null인 회원 주문)은 아직 이 값으로만 조회할 수 있다.
+     */
     @Column(length = 320)
     private String customerEmail;
+
+    /**
+     * 게스트 주문 접근 토큰. 소유자 계정이 없는 주문은 이 값을 아는 클라이언트(주문을 방금 만든
+     * 브라우저)만 조회/결제할 수 있다. 생성 응답에서 한 번만 내려준다.
+     */
+    @Column(name = "guest_token", length = 36)
+    private String guestToken;
 
     @Column(nullable = false, length = 100)
     private String ordererName;
@@ -86,5 +104,25 @@ public class Order {
     public void addItem(OrderItem item) {
         items.add(item);
         item.setOrder(this);
+    }
+
+    /**
+     * 이 주문을 조회/결제할 수 있는 요청인지 판정한다. 우선순위가 중요하다 —
+     * <ol>
+     *   <li>소유자 계정이 있으면(customerId) 그 계정만. 이메일은 보지 않는다.</li>
+     *   <li>customerId가 아직 백필되지 않은 레거시 회원 주문은 이메일로 폴백한다.</li>
+     *   <li>둘 다 없으면 게스트 주문이므로 guestToken이 일치해야 한다.</li>
+     * </ol>
+     * 셋 다 해당하지 않으면 거부다. 특히 게스트 주문에 토큰 없이 접근하는 것을
+     * "소유자가 없으니 통과"로 처리하면 안 된다 — 그게 #214의 취약점이었다.
+     */
+    public boolean isAccessibleBy(String userId, String userEmail, String presentedGuestToken) {
+        if (customerId != null) {
+            return customerId.equals(userId);
+        }
+        if (customerEmail != null) {
+            return customerEmail.equalsIgnoreCase(userEmail);
+        }
+        return guestToken != null && guestToken.equals(presentedGuestToken);
     }
 }
