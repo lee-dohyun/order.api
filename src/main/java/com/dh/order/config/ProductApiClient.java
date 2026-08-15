@@ -1,6 +1,7 @@
 package com.dh.order.config;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -8,6 +9,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Component;
 
 import com.dh.order.domain.OrderItem;
 import com.dh.order.service.OrderStateException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 // order.api와 product.api의 첫 서비스 간 동기 호출. 결제 확정 시점(payOrder)에 재고를 실제로
@@ -34,6 +37,54 @@ public class ProductApiClient {
             ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * variantId만 넘겨 상품/가격을 확정받는다. 클라이언트가 보낸 가격·상품명·productId는 신뢰하지
+     * 않고 전부 이 응답으로 대체한다 — Redmine posselect #232.
+     *
+     * <p>존재하지 않는 variantId는 응답에서 빠지므로 호출자가 요청 건수와 대조해야 한다.
+     *
+     * @throws OrderStateException product.api 호출에 실패하면. 가격을 모르는 채로 주문을 만드는
+     *         것보다 주문 생성을 실패시키는 편이 안전하다.
+     */
+    public Map<Long, ResolvedVariant> resolveVariants(List<Long> variantIds) {
+        if (variantIds.isEmpty()) {
+            return Map.of();
+        }
+        String ids = variantIds.stream().map(String::valueOf).collect(Collectors.joining(","));
+        URI uri = URI.create(baseUrl + "/api/internal/variants/resolve?ids=" + ids);
+        try {
+            HttpRequest request = HttpRequest.newBuilder(uri)
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                log.warn("상품 가격 조회 실패 (status={}, body={})", response.statusCode(), response.body());
+                throw new OrderStateException("order.catalogUnavailable");
+            }
+            List<ResolvedVariant> resolved = objectMapper.readValue(
+                    response.body(), new TypeReference<List<ResolvedVariant>>() {
+                    });
+            return resolved.stream().collect(Collectors.toMap(ResolvedVariant::variantId, v -> v));
+        } catch (IOException e) {
+            log.warn("상품 서비스 연결 실패 (variantIds={})", variantIds, e);
+            throw new OrderStateException("order.catalogUnavailable");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("상품 서비스 호출 중단 (variantIds={})", variantIds, e);
+            throw new OrderStateException("order.catalogUnavailable");
+        }
+    }
+
+    /** product.api가 확정해 준 상품/가격. 주문 금액 산정의 유일한 출처다. */
+    public record ResolvedVariant(
+            Long variantId,
+            Long productId,
+            String productName,
+            BigDecimal price,
+            boolean active) {
     }
 
     /** @throws OrderStateException 재고 부족이거나 product.api 호출에 실패하면 (ApiExceptionHandler가 409로 응답) */

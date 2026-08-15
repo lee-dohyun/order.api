@@ -5,7 +5,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -15,11 +14,13 @@ public class OrderDtos {
 
     // order-api는 catalogdb에 접근하지 않으므로, 주문 시점의 상품명/가격은 클라이언트(카트)가 스냅샷으로
     // 함께 보냄. variantId는 결제 확정 시 product.api 재고 차감의 기준 키.
+    /**
+     * variantId와 수량만 받는다. 상품명·가격·productId는 서버가 product.api에서 확정하므로
+     * 요청 본문에 있어도 무시된다 — 예전엔 price를 그대로 믿어서 임의 금액 주문이 가능했다(#232).
+     * 기존 프론트가 아직 그 필드들을 함께 보내지만 Jackson이 조용히 버린다.
+     */
     public record OrderItemRequest(
-            @NotNull Long productId,
             @NotNull Long variantId,
-            @NotBlank String productName,
-            @NotNull @DecimalMin(value = "0", inclusive = true) BigDecimal price,
             @NotNull @Min(1) Integer quantity) {
     }
 

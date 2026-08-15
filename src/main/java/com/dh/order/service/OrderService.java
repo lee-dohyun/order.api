@@ -3,15 +3,18 @@ package com.dh.order.service;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.dh.order.config.ProductApiClient;
+import com.dh.order.config.ProductApiClient.ResolvedVariant;
 import com.dh.order.domain.Order;
 import com.dh.order.domain.OrderItem;
 import com.dh.order.domain.OrderStatus;
@@ -63,8 +66,20 @@ public class OrderService {
         this.productApiClient = productApiClient;
     }
 
-    @Transactional
+    /**
+     * 주문을 만든다. 금액은 클라이언트가 보낸 값이 아니라 product.api가 확정해 준 가격으로만
+     * 산정한다 — 예전에는 요청 본문의 price를 그대로 믿어서 임의 금액 주문이 가능했다(#232).
+     *
+     * <p>{@code NOT_SUPPORTED}인 이유: 가격 조회가 원격 HTTP 호출이라 트랜잭션 안에서 하면
+     * 커넥션을 잡은 채 네트워크를 기다리게 된다. 저장은 아래 {@code orderRepository.save()}가
+     * 자체 트랜잭션으로 처리한다. 이 클래스는 클래스 레벨이 {@code readOnly = true}라서
+     * 명시적으로 끊어주지 않으면 읽기 전용 트랜잭션에 합류한다(#211에서 겪은 함정).
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public OrderResponse createOrder(OrderCreateRequest request, Requester requester) {
+        List<Long> variantIds = request.items().stream().map(OrderItemRequest::variantId).distinct().toList();
+        Map<Long, ResolvedVariant> catalog = productApiClient.resolveVariants(variantIds);
+
         Order order = new Order();
         order.setCustomerId(requester.userId());
         order.setCustomerEmail(requester.userEmail());
@@ -83,14 +98,22 @@ public class OrderService {
 
         BigDecimal total = BigDecimal.ZERO;
         for (OrderItemRequest itemRequest : request.items()) {
+            // 조회에서 빠졌거나 판매 중지된 variant는 주문을 만들지 않는다. 가격을 모르는 채로
+            // 주문을 생성하면 결제 금액을 확정할 수 없다.
+            ResolvedVariant variant = catalog.get(itemRequest.variantId());
+            if (variant == null || !variant.active()) {
+                throw new OrderStateException("order.itemUnavailable");
+            }
             OrderItem item = new OrderItem();
-            item.setProductId(itemRequest.productId());
-            item.setVariantId(itemRequest.variantId());
-            item.setProductName(itemRequest.productName());
-            item.setPrice(itemRequest.price());
+            // productId/productName도 클라이언트 값을 쓰지 않는다 — variantId와 어긋난 조합을
+            // 보내 다른 상품인 것처럼 기록되게 하는 걸 막는다.
+            item.setProductId(variant.productId());
+            item.setVariantId(variant.variantId());
+            item.setProductName(variant.productName());
+            item.setPrice(variant.price());
             item.setQuantity(itemRequest.quantity());
             order.addItem(item);
-            total = total.add(itemRequest.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
+            total = total.add(variant.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
         }
         order.setTotalPrice(total);
 
