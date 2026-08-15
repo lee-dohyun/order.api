@@ -117,4 +117,32 @@ public class ProductApiClient {
             throw new OrderStateException("order.inventoryUnavailable");
         }
     }
+
+    public void restoreInventory(Long orderId, List<com.dh.order.dto.OrderDtos.OrderItemResponse> items) {
+        List<Map<String, Object>> itemPayload = items.stream()
+                .map(item -> Map.<String, Object>of("variantId", item.variantId(), "quantity", item.quantity()))
+                .toList();
+        Map<String, Object> body = Map.of("orderId", orderId, "items", itemPayload);
+
+        try {
+            String json = objectMapper.writeValueAsString(body);
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/api/inventory/restore"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(5))
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                log.warn("재고 복원 실패 (orderId={}, status={}, body={})", orderId, response.statusCode(), response.body());
+                throw new OrderStateException("order.inventoryUnavailable");
+            }
+        } catch (IOException e) {
+            log.warn("재고 서비스 연결 실패 (orderId={})", orderId, e);
+            throw new OrderStateException("order.inventoryUnavailable");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("재고 서비스 호출 중단 (orderId={})", orderId, e);
+            throw new OrderStateException("order.inventoryUnavailable");
+        }
+    }
 }

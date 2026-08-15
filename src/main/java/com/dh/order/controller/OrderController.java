@@ -26,6 +26,7 @@ import com.dh.order.dto.OrderDtos.RefundResponse;
 import com.dh.order.dto.OrderDtos.Requester;
 import com.dh.order.dto.OrderDtos.ShipmentResponse;
 import com.dh.order.service.OrderService;
+import com.dh.order.config.ProductApiClient;
 
 import jakarta.validation.Valid;
 
@@ -43,10 +44,12 @@ public class OrderController {
 
     private final OrderService orderService;
     private final AdminJwtVerifier adminJwtVerifier;
+    private final ProductApiClient productApiClient;
 
-    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier) {
+    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier, ProductApiClient productApiClient) {
         this.orderService = orderService;
         this.adminJwtVerifier = adminJwtVerifier;
+        this.productApiClient = productApiClient;
     }
 
     @PostMapping
@@ -147,7 +150,21 @@ public class OrderController {
         if (verifyAdmin(authHeader) == null) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        return ResponseEntity.ok(orderService.refundOrder(id, request));
+
+        // 1. 환불할 주문의 상품 목록(아이템) 조회
+        OrderResponse orderResponse = orderService.getOrder(id, requesterOf(null, null, null, authHeader));
+
+        // 2. 내부 트랜잭션으로 환불 상태 변경
+        RefundResponse response = orderService.refundOrder(id, request);
+
+        // 3. 재고 복원 원격 호출 (트랜잭션 밖에서 실행하여 롤백 방지)
+        try {
+            productApiClient.restoreInventory(id, orderResponse.items());
+        } catch (Exception e) {
+            logger.error("환불은 성공했으나 재고 복원 호출 실패 - 수동 복원 필요. orderId={}", id, e);
+        }
+
+        return ResponseEntity.ok(response);
     }
 
     private Requester requesterOf(String userId, String userEmail, String guestToken, String authHeader) {
