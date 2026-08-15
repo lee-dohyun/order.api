@@ -50,6 +50,7 @@ public class OrderService {
     private final RefundRepository refundRepository;
     private final OrderNotificationService notificationService;
     private final ProductApiClient productApiClient;
+    private final com.dh.order.repository.ChannelRepository channelRepository;
 
     public OrderService(
             OrderRepository orderRepository,
@@ -57,13 +58,15 @@ public class OrderService {
             PaymentRepository paymentRepository,
             RefundRepository refundRepository,
             OrderNotificationService notificationService,
-            ProductApiClient productApiClient) {
+            ProductApiClient productApiClient,
+            com.dh.order.repository.ChannelRepository channelRepository) {
         this.orderRepository = orderRepository;
         this.shipmentRepository = shipmentRepository;
         this.paymentRepository = paymentRepository;
         this.refundRepository = refundRepository;
         this.notificationService = notificationService;
         this.productApiClient = productApiClient;
+        this.channelRepository = channelRepository;
     }
 
     /**
@@ -76,11 +79,15 @@ public class OrderService {
      * 명시적으로 끊어주지 않으면 읽기 전용 트랜잭션에 합류한다(#211에서 겪은 함정).
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public OrderResponse createOrder(OrderCreateRequest request, Requester requester) {
+    public OrderResponse createOrder(Long channelId, OrderCreateRequest request, Requester requester) {
         List<Long> variantIds = request.items().stream().map(OrderItemRequest::variantId).distinct().toList();
         Map<Long, ResolvedVariant> catalog = productApiClient.resolveVariants(variantIds);
 
+        com.dh.order.domain.Channel channel = channelRepository.findById(channelId)
+                .orElseThrow(() -> new NoSuchElementException("channel not found: " + channelId));
+
         Order order = new Order();
+        order.setChannel(channel);
         order.setCustomerId(requester.userId());
         order.setCustomerEmail(requester.userEmail());
         // 소유자 계정이 없는 게스트 주문은 이 토큰이 유일한 접근 수단이다.

@@ -54,11 +54,12 @@ public class OrderController {
 
     @PostMapping
     public ResponseEntity<OrderResponse> create(
+            @RequestHeader(value = "X-Channel", defaultValue = "1") Long channelId,
             @Valid @RequestBody OrderCreateRequest request,
             @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
             @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail) {
         Requester requester = Requester.of(userId, userEmail, null, false);
-        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(request, requester));
+        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(channelId, request, requester));
     }
 
     // 로그인한 사용자 본인의 주문 목록. 게이트웨이가 로그인 시에만 신원 헤더를 넣어주므로,

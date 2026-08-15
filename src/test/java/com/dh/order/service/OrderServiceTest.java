@@ -49,6 +49,8 @@ class OrderServiceTest {
     private OrderNotificationService notificationService;
     @Mock
     private ProductApiClient productApiClient;
+    @Mock
+    private com.dh.order.repository.ChannelRepository channelRepository;
 
     @InjectMocks
     private OrderService orderService;

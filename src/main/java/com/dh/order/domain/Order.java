@@ -32,6 +32,10 @@ public class Order {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @jakarta.persistence.ManyToOne(fetch = FetchType.LAZY)
+    @jakarta.persistence.JoinColumn(name = "channel_id", nullable = false)
+    private Channel channel;
+
     /**
      * 주문의 소유자. Keycloak sub(불변 UUID)이며 게이트웨이가 X-User-Id로 전달한다.
      * 이메일은 사용자가 바꿀 수 있어서 소유자 키로 쓸 수 없다 - 조회/인가는 항상 이 값 기준.

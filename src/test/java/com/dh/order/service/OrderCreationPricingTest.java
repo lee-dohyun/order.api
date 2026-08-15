@@ -36,13 +36,19 @@ class OrderCreationPricingTest {
 
     private ProductApiClient productApiClient;
     private OrderRepository orderRepository;
+    private com.dh.order.repository.ChannelRepository channelRepository;
     private OrderService orderService;
 
     @BeforeEach
     void setUp() {
         productApiClient = mock(ProductApiClient.class);
         orderRepository = mock(OrderRepository.class);
+        channelRepository = mock(com.dh.order.repository.ChannelRepository.class);
         when(orderRepository.save(any(Order.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        com.dh.order.domain.Channel channel = new com.dh.order.domain.Channel("종합몰", "posselect.com");
+        org.springframework.test.util.ReflectionTestUtils.setField(channel, "id", 1L);
+        when(channelRepository.findById(1L)).thenReturn(java.util.Optional.of(channel));
 
         orderService = new OrderService(
                 orderRepository,
@@ -50,14 +56,15 @@ class OrderCreationPricingTest {
                 mock(PaymentRepository.class),
                 mock(RefundRepository.class),
                 mock(OrderNotificationService.class),
-                productApiClient);
+                productApiClient,
+                channelRepository);
     }
 
     @Test
     void 주문_금액은_카탈로그_가격으로_계산된다() {
         가격을_돌려주도록(42L, 카탈로그_가격, true);
 
-        OrderResponse response = orderService.createOrder(주문요청(42L, 2), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(42L, 2), 게스트());
 
         assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격.multiply(BigDecimal.valueOf(2)));
         assertThat(response.items()).singleElement()
@@ -68,7 +75,7 @@ class OrderCreationPricingTest {
     void 상품명과_productId도_카탈로그_값을_쓴다() {
         가격을_돌려주도록(42L, 카탈로그_가격, true);
 
-        OrderResponse response = orderService.createOrder(주문요청(42L, 1), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(42L, 1), 게스트());
 
         assertThat(response.items()).singleElement().satisfies(item -> {
             assertThat(item.productId()).isEqualTo(7L);
@@ -80,7 +87,7 @@ class OrderCreationPricingTest {
     void 카탈로그에_없는_variant는_주문이_거부된다() {
         when(productApiClient.resolveVariants(anyList())).thenReturn(Map.of());
 
-        assertThatThrownBy(() -> orderService.createOrder(주문요청(999L, 1), 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(999L, 1), 게스트()))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.itemUnavailable");
     }
@@ -89,7 +96,7 @@ class OrderCreationPricingTest {
     void 판매중지된_variant는_주문이_거부된다() {
         가격을_돌려주도록(42L, 카탈로그_가격, false);
 
-        assertThatThrownBy(() -> orderService.createOrder(주문요청(42L, 1), 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(42L, 1), 게스트()))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.itemUnavailable");
     }
