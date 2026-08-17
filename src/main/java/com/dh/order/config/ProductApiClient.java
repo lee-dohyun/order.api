@@ -53,7 +53,7 @@ public class ProductApiClient {
             return Map.of();
         }
         String ids = variantIds.stream().map(String::valueOf).collect(Collectors.joining(","));
-        URI uri = URI.create(baseUrl + "/api/internal/variants/resolve?ids=" + ids);
+        URI uri = URI.create(baseUrl + "/internal/variants/resolve?ids=" + ids);
         try {
             HttpRequest request = HttpRequest.newBuilder(uri)
                     .timeout(Duration.ofSeconds(5))
@@ -96,7 +96,7 @@ public class ProductApiClient {
 
         try {
             String json = objectMapper.writeValueAsString(body);
-            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/api/inventory/deduct"))
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/inventory/deduct"))
                     .header("Content-Type", "application/json")
                     .timeout(Duration.ofSeconds(5))
                     .POST(HttpRequest.BodyPublishers.ofString(json))
@@ -126,7 +126,7 @@ public class ProductApiClient {
 
         try {
             String json = objectMapper.writeValueAsString(body);
-            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/api/inventory/restore"))
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/inventory/restore"))
                     .header("Content-Type", "application/json")
                     .timeout(Duration.ofSeconds(5))
                     .POST(HttpRequest.BodyPublishers.ofString(json))

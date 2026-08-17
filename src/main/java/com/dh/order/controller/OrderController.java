@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.dh.order.config.AdminJwtVerifier;
+import com.dh.order.config.CustomerJwtVerifier;
 import com.dh.order.dto.OrderDtos.CreateShipmentRequest;
 import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
@@ -27,6 +28,7 @@ import com.dh.order.dto.OrderDtos.Requester;
 import com.dh.order.dto.OrderDtos.ShipmentResponse;
 import com.dh.order.service.OrderService;
 import com.dh.order.config.ProductApiClient;
+import com.nimbusds.jwt.JWTClaimsSet;
 
 import jakarta.validation.Valid;
 
@@ -36,19 +38,19 @@ public class OrderController {
 
     private static final Logger logger = LoggerFactory.getLogger(OrderController.class);
 
-    /** 게이트웨이가 JWT 검증 후에만 주입하는 신원 헤더. 클라이언트가 보낸 동명 헤더는 게이트웨이가 먼저 제거한다. */
-    private static final String USER_ID_HEADER = "X-User-Id";
-    private static final String USER_EMAIL_HEADER = "X-User-Email";
     /** 게스트 주문 접근 토큰. 주문 생성 응답으로 받은 값을 클라이언트가 되돌려 보낸다. */
     private static final String GUEST_TOKEN_HEADER = "X-Order-Guest-Token";
 
     private final OrderService orderService;
     private final AdminJwtVerifier adminJwtVerifier;
+    private final CustomerJwtVerifier customerJwtVerifier;
     private final ProductApiClient productApiClient;
 
-    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier, ProductApiClient productApiClient) {
+    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier, 
+                           CustomerJwtVerifier customerJwtVerifier, ProductApiClient productApiClient) {
         this.orderService = orderService;
         this.adminJwtVerifier = adminJwtVerifier;
+        this.customerJwtVerifier = customerJwtVerifier;
         this.productApiClient = productApiClient;
     }
 
@@ -56,19 +58,16 @@ public class OrderController {
     public ResponseEntity<OrderResponse> create(
             @RequestHeader(value = "X-Channel", defaultValue = "1") Long channelId,
             @Valid @RequestBody OrderCreateRequest request,
-            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
-            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail) {
-        Requester requester = Requester.of(userId, userEmail, null, false);
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        Requester requester = extractRequester(authHeader, null);
         return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(channelId, request, requester));
     }
 
-    // 로그인한 사용자 본인의 주문 목록. 게이트웨이가 로그인 시에만 신원 헤더를 넣어주므로,
-    // 비로그인 상태로 호출되면 헤더가 없어 401을 응답한다.
+    // 로그인한 사용자 본인의 주문 목록.
     @GetMapping("/mine")
     public ResponseEntity<List<OrderSummaryResponse>> getMine(
-            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
-            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail) {
-        Requester requester = Requester.of(userId, userEmail, null, false);
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        Requester requester = extractRequester(authHeader, null);
         if (requester.userId() == null && requester.userEmail() == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
@@ -92,21 +91,17 @@ public class OrderController {
     @GetMapping("/{id}")
     public OrderResponse get(
             @PathVariable Long id,
-            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
-            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail,
             @RequestHeader(value = GUEST_TOKEN_HEADER, required = false) String guestToken,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        return orderService.getOrder(id, requesterOf(userId, userEmail, guestToken, authHeader));
+        return orderService.getOrder(id, extractRequester(authHeader, guestToken));
     }
 
     @PostMapping("/{id}/pay")
     public OrderResponse pay(
             @PathVariable Long id,
-            @RequestHeader(value = USER_ID_HEADER, required = false) String userId,
-            @RequestHeader(value = USER_EMAIL_HEADER, required = false) String userEmail,
             @RequestHeader(value = GUEST_TOKEN_HEADER, required = false) String guestToken,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        return orderService.payOrder(id, requesterOf(userId, userEmail, guestToken, authHeader));
+        return orderService.payOrder(id, extractRequester(authHeader, guestToken));
     }
 
     // admin.front(staff realm) 전용 - 운송장 등록 시 주문 상태가 PAID -> SHIPPED로 전이된다.
@@ -153,7 +148,7 @@ public class OrderController {
         }
 
         // 1. 환불할 주문의 상품 목록(아이템) 조회
-        OrderResponse orderResponse = orderService.getOrder(id, requesterOf(null, null, null, authHeader));
+        OrderResponse orderResponse = orderService.getOrder(id, Requester.of(null, null, null, true));
 
         // 2. 내부 트랜잭션으로 환불 상태 변경
         RefundResponse response = orderService.refundOrder(id, request);
@@ -168,8 +163,25 @@ public class OrderController {
         return ResponseEntity.ok(response);
     }
 
-    private Requester requesterOf(String userId, String userEmail, String guestToken, String authHeader) {
-        return Requester.of(userId, userEmail, guestToken, verifyAdmin(authHeader) != null);
+    private Requester extractRequester(String authHeader, String guestToken) {
+        String adminEmail = verifyAdmin(authHeader);
+        if (adminEmail != null) {
+            return Requester.of(null, null, guestToken, true);
+        }
+        
+        String token = authHeader != null && authHeader.startsWith("Bearer ")
+                ? authHeader.substring("Bearer ".length())
+                : null;
+                
+        JWTClaimsSet claims = customerJwtVerifier.verify(token);
+        if (claims != null) {
+            try {
+                return Requester.of(claims.getSubject(), claims.getStringClaim("email"), guestToken, false);
+            } catch (Exception e) {
+                // Ignore parse exception
+            }
+        }
+        return Requester.of(null, null, guestToken, false);
     }
 
     private String verifyAdmin(String authHeader) {
