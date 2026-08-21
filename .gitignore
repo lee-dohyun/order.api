@@ -4,3 +4,6 @@ build/
 
 # Claude Code session worktrees (never track, see repo history for why)
 .claude/worktrees/
+
+# Eclipse/STS 빌드 산출물 — 예전에 커밋돼 있던 걸 걷어냈다(2026-08-21). 다시 들어오지 않게 무시한다.
+bin/
