@@ -1,3 +1,6 @@
 build/
 .gradle/
 *.log
+
+# Claude Code session worktrees (never track, see repo history for why)
+.claude/worktrees/
