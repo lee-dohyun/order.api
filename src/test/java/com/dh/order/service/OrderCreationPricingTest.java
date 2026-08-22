@@ -57,7 +57,8 @@ class OrderCreationPricingTest {
                 mock(RefundRepository.class),
                 mock(OrderNotificationService.class),
                 productApiClient,
-                channelRepository);
+                channelRepository,
+                mock(OrderPaymentFinalizer.class));
     }
 
     @Test
