@@ -6,7 +6,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Date;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -38,8 +41,15 @@ public class AdminJwtVerifier {
         this.expectedIssuer = expectedIssuer;
     }
 
-    /** 유효하면 email 클레임을, 아니면 null을 반환한다. */
-    public String verify(String bearerToken) {
+    /**
+     * 유효하면 email + 역할을 담은 {@link AdminPrincipal} 을, 아니면 null 을 반환한다.
+     *
+     * <p><b>여기서 null 이 아니라는 것은 "staff realm 의 유효한 토큰"이라는 뜻일 뿐,
+     * 무엇을 해도 된다는 뜻이 아니다.</b> 호출부는 반드시
+     * {@link AdminPrincipal#hasAnyRole(String...)} 로 역할까지 확인해야 한다 —
+     * 그 확인이 빠져 있던 것이 order.api#12 다.
+     */
+    public AdminPrincipal verify(String bearerToken) {
         if (bearerToken == null || bearerToken.isBlank()) {
             return null;
         }
@@ -56,10 +66,32 @@ public class AdminJwtVerifier {
             if (!expectedIssuer.equals(claims.getIssuer())) {
                 return null;
             }
-            return claims.getStringClaim("email");
+            return new AdminPrincipal(claims.getStringClaim("email"), extractRealmRoles(claims));
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Keycloak 은 realm 역할을 {@code realm_access.roles} 배열에 싣는다
+     * (admin.front 의 {@code lib/auth.ts} 도 같은 경로를 읽는다 — 둘이 어긋나면
+     * 화면과 API 의 판정이 갈린다).
+     */
+    private static Set<String> extractRealmRoles(JWTClaimsSet claims) {
+        Object realmAccess = claims.getClaim("realm_access");
+        if (!(realmAccess instanceof Map<?, ?> map)) {
+            return Set.of();
+        }
+        if (!(map.get("roles") instanceof List<?> roles)) {
+            return Set.of();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (Object role : roles) {
+            if (role instanceof String name) {
+                result.add(name);
+            }
+        }
+        return Set.copyOf(result);
     }
 
     private RSAKey resolveKey(String kid) throws Exception {
