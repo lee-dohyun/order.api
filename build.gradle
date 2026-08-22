@@ -33,7 +33,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-mail'
 	implementation 'org.springframework.boot:spring-boot-starter-aop'
 	implementation 'io.github.resilience4j:resilience4j-spring-boot3:2.2.0'
-	implementation 'com.nimbusds:nimbus-jose-jwt:9.37.3'
+	implementation 'com.nimbusds:nimbus-jose-jwt:10.9.1'
 	runtimeOnly 'org.postgresql:postgresql'
 	compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
