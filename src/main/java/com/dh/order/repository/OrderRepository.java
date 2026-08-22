@@ -1,5 +1,7 @@
 package com.dh.order.repository;
 
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -25,4 +27,32 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     List<Order> findMine(@Param("customerId") String customerId, @Param("customerEmail") String customerEmail);
 
     List<Order> findAllByOrderByCreatedAtDesc();
+
+    /**
+     * 회원별 구매확정 금액 합계. auth.api 의 등급 산정 배치가 클러스터 내부망으로 호출한다.
+     *
+     * <p><b>DELIVERED 만 센다.</b> CREATED/PAID/PREPARING/SHIPPED 는 아직 확정이 아니고
+     * CANCELLED/REFUNDED 는 확정이 취소된 것이다. "결제했으니 등급이 오른다"로 만들면
+     * 주문 후 환불을 반복해 등급을 올릴 수 있다.
+     *
+     * <p><b>게스트 주문(customerId is null)은 제외한다</b> — 귀속시킬 회원이 없다.
+     * 레거시 이메일 폴백도 쓰지 않는다. 등급은 금전적 혜택이라 "아마 이 사람일 것"으로
+     * 집계하면 안 된다.
+     */
+    @Query("""
+            select o.customerId as customerId, sum(o.totalPrice) as confirmedAmount
+            from Order o
+            where o.customerId is not null
+              and o.status = com.dh.order.domain.OrderStatus.DELIVERED
+              and o.createdAt >= :since
+            group by o.customerId
+            """)
+    List<PurchaseSummaryRow> sumConfirmedPurchasesSince(@Param("since") LocalDateTime since);
+
+    /** 프로젝션 — 엔티티를 통째로 끌고 오지 않는다(회원 수만큼 커진다). */
+    interface PurchaseSummaryRow {
+        String getCustomerId();
+
+        BigDecimal getConfirmedAmount();
+    }
 }
