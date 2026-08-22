@@ -36,8 +36,16 @@ public class OrderDtos {
             @NotEmpty @Valid List<OrderItemRequest> items) {
     }
 
+    /**
+     * 주문 상품 한 줄.
+     *
+     * <p>{@code sellerId}/{@code sellerName} 은 주문 시점 스냅샷이다. 1P 인 지금은 항상 자사지만,
+     * 3P 로 넘어가면 <b>전자상거래법상 판매자 신원을 청약 전에 제공할 의무</b>가 생기므로
+     * 고객 응답에도 실려야 한다(order.api#15). 지금부터 실어 두면 그때 프론트 계약이 안 바뀐다.
+     */
     public record OrderItemResponse(
-            Long productId, Long variantId, String productName, BigDecimal price, Integer quantity) {
+            Long productId, Long variantId, String productName, BigDecimal price, Integer quantity,
+            Long sellerId, String sellerName) {
     }
 
     /**

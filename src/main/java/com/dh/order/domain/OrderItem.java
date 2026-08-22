@@ -46,4 +46,18 @@ public class OrderItem {
 
     @Column(nullable = false)
     private Integer quantity;
+
+    /**
+     * 주문 시점 판매자 식별자 <b>스냅샷</b>. 1 = 자사(1P).
+     *
+     * <p>참조가 아니라 스냅샷이라 FK 가 없다 — 판매자가 나가도 "누가 팔았는가"는 남아야 한다.
+     * 나중에 들어올 {@code offerId}(order.api#14)는 성격이 반대다: 참조라 오퍼가 삭제되면 끊긴다.
+     * <b>둘 다 필요하고 하나로 합치면 안 된다.</b>
+     */
+    @Column(name = "seller_id", nullable = false)
+    private Long sellerId;
+
+    /** 주문 시점 판매자 상호 스냅샷. 표시·CS 용도. */
+    @Column(name = "seller_name", nullable = false, length = 100)
+    private String sellerName;
 }
