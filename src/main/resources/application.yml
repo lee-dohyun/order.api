@@ -57,3 +57,18 @@ app:
   mail-from: ${MAIL_FROM:customer-service@posselect.com}
   # 주문 금액의 저장 통화. 지금은 KRW 단일 저장이고, 표시 시점 환율 변환은 #108의 몫이다.
   base-currency: ${BASE_CURRENCY:KRW}
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+    instances:
+      productApi:
+        baseConfig: default

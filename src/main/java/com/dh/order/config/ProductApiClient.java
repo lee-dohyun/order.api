@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,6 +49,7 @@ public class ProductApiClient {
      * @throws OrderStateException product.api 호출에 실패하면. 가격을 모르는 채로 주문을 만드는
      *         것보다 주문 생성을 실패시키는 편이 안전하다.
      */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "resolveVariantsFallback")
     public Map<Long, ResolvedVariant> resolveVariants(List<Long> variantIds) {
         if (variantIds.isEmpty()) {
             return Map.of();
@@ -56,7 +58,7 @@ public class ProductApiClient {
         URI uri = URI.create(baseUrl + "/internal/variants/resolve?ids=" + ids);
         try {
             HttpRequest request = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(5))
+                    .timeout(Duration.ofSeconds(2))
                     .GET()
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -78,6 +80,11 @@ public class ProductApiClient {
         }
     }
 
+    public Map<Long, ResolvedVariant> resolveVariantsFallback(List<Long> variantIds, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 상품 서비스 호출 불가 (variantIds={})", variantIds, t);
+        throw new OrderStateException("order.catalogUnavailable");
+    }
+
     /** product.api가 확정해 준 상품/가격. 주문 금액 산정의 유일한 출처다. */
     public record ResolvedVariant(
             Long variantId,
@@ -88,6 +95,7 @@ public class ProductApiClient {
     }
 
     /** @throws OrderStateException 재고 부족이거나 product.api 호출에 실패하면 (ApiExceptionHandler가 409로 응답) */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "deductInventoryFallback")
     public void deductInventory(Long orderId, List<OrderItem> items) {
         List<Map<String, Object>> itemPayload = items.stream()
                 .map(item -> Map.<String, Object>of("variantId", item.getVariantId(), "quantity", item.getQuantity()))
@@ -98,7 +106,7 @@ public class ProductApiClient {
             String json = objectMapper.writeValueAsString(body);
             HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/inventory/deduct"))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(5))
+                    .timeout(Duration.ofSeconds(2))
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -118,6 +126,12 @@ public class ProductApiClient {
         }
     }
 
+    public void deductInventoryFallback(Long orderId, List<OrderItem> items, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 재고 서비스 호출 불가 (orderId={})", orderId, t);
+        throw new OrderStateException("order.inventoryUnavailable");
+    }
+
+    @CircuitBreaker(name = "productApi", fallbackMethod = "restoreInventoryFallback")
     public void restoreInventory(Long orderId, List<com.dh.order.dto.OrderDtos.OrderItemResponse> items) {
         List<Map<String, Object>> itemPayload = items.stream()
                 .map(item -> Map.<String, Object>of("variantId", item.variantId(), "quantity", item.quantity()))
@@ -128,7 +142,7 @@ public class ProductApiClient {
             String json = objectMapper.writeValueAsString(body);
             HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/inventory/restore"))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(5))
+                    .timeout(Duration.ofSeconds(2))
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -144,5 +158,10 @@ public class ProductApiClient {
             log.warn("재고 서비스 호출 중단 (orderId={})", orderId, e);
             throw new OrderStateException("order.inventoryUnavailable");
         }
+    }
+
+    public void restoreInventoryFallback(Long orderId, List<com.dh.order.dto.OrderDtos.OrderItemResponse> items, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 재고 복원 불가 (orderId={})", orderId, t);
+        throw new OrderStateException("order.inventoryUnavailable");
     }
 }
