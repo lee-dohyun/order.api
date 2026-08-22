@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.dh.order.config.AdminJwtVerifier;
+import com.dh.order.config.AdminPrincipal;
 import com.dh.order.config.CustomerJwtVerifier;
 import com.dh.order.dto.OrderDtos.CreateShipmentRequest;
 import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
@@ -40,6 +41,9 @@ public class OrderController {
 
     /** 게스트 주문 접근 토큰. 주문 생성 응답으로 받은 값을 클라이언트가 되돌려 보낸다. */
     private static final String GUEST_TOKEN_HEADER = "X-Order-Guest-Token";
+
+    /** admin.front lib/menu.ts 의 "주문 관리" requiredRoles 와 같은 값이어야 한다. */
+    private static final String ORDER_MANAGER = "ORDER_MANAGER";
 
     private final OrderService orderService;
     private final AdminJwtVerifier adminJwtVerifier;
@@ -184,10 +188,31 @@ public class OrderController {
         return Requester.of(null, null, guestToken, false);
     }
 
+    /**
+     * staff realm 토큰을 검증하고 <b>주문 관리 역할까지 확인한</b> 뒤 관리자 email 을 돌려준다.
+     * 통과하지 못하면 null 이다.
+     *
+     * <p>이전에는 토큰이 유효하기만 하면 email 을 돌려줬다. 그래서 admin.front(lib/menu.ts)가
+     * 주문 메뉴를 ORDER_MANAGER / SYSTEM_ADMIN 으로 제한해 두었는데도, PRODUCT_MANAGER 계정이
+     * 자기 토큰으로 이 API 를 직접 호출하면 <b>수령인 이름·주소·연락처가 담긴 주문을 조회하고
+     * 배송까지 등록</b>할 수 있었다(order.api#12). admin.front 미들웨어는 admin.posselect.com 을
+     * 거칠 때만 도는 방어선이라 여기서 다시 막는다.
+     *
+     * <p>역할이 부족한 staff 토큰은 "관리자가 아님"으로 취급된다 — {@link #extractRequester}
+     * 에서 관리자 권한을 얻지 못하고 일반 고객 토큰 검증으로 흘러간다.
+     */
     private String verifyAdmin(String authHeader) {
         String token = authHeader != null && authHeader.startsWith("Bearer ")
                 ? authHeader.substring("Bearer ".length())
                 : null;
-        return adminJwtVerifier.verify(token);
+        AdminPrincipal admin = adminJwtVerifier.verify(token);
+        if (admin == null) {
+            return null;
+        }
+        if (!admin.hasAnyRole(ORDER_MANAGER)) {
+            logger.warn("관리자 주문 API 거부(역할 부족): {} roles={}", admin.email(), admin.roles());
+            return null;
+        }
+        return admin.email();
     }
 }
