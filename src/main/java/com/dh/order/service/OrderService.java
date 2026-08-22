@@ -42,6 +42,13 @@ import com.dh.order.repository.ShipmentRepository;
 @Transactional(readOnly = true)
 public class OrderService {
 
+    /**
+     * 자사 판매자 식별자. 1P 로 시작하기로 한 결정(gateway#212 결정 0)에 따라 지금은 이 값 하나뿐이다.
+     * 3P 로 넘어가면 오퍼가 판매자를 결정하므로 이 상수는 사라진다.
+     */
+    private static final Long FIRST_PARTY_SELLER_ID = 1L;
+    private static final String FIRST_PARTY_SELLER_NAME = "포스셀렉트";
+
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final OrderRepository orderRepository;
@@ -119,6 +126,11 @@ public class OrderService {
             item.setProductName(variant.productName());
             item.setPrice(variant.price());
             item.setQuantity(itemRequest.quantity());
+            // 지금은 판매자가 자사 한 곳뿐이라 상수다. 3단계(order.api#14)에서 오퍼 참조로 바뀌면
+            // offers/resolve 응답의 판매자를 그대로 옮겨 담는 자리가 된다. 상수인 동안에도
+            // 값을 남겨 두는 이유는 소급이 불가능하기 때문이다(order.api#13).
+            item.setSellerId(FIRST_PARTY_SELLER_ID);
+            item.setSellerName(FIRST_PARTY_SELLER_NAME);
             order.addItem(item);
             total = total.add(variant.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
         }
@@ -242,7 +254,8 @@ public class OrderService {
     private OrderResponse toResponse(Order order, String guestToken) {
         List<OrderItemResponse> items = order.getItems().stream()
                 .map(i -> new OrderItemResponse(
-                        i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity()))
+                        i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity(),
+                        i.getSellerId(), i.getSellerName()))
                 .toList();
 
         return new OrderResponse(
