@@ -171,7 +171,7 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
 
 ---
 
-<!-- canon:begin sha=d8c1c14d807c src=~/msa/AGENTS.md -->
+<!-- canon:begin sha=e6e86cbd7515 src=~/msa/AGENTS.md -->
 ## 공통 캐논 (모든 AI 도구 공통)
 
 > **공통 캐논 (자동 주입 — 손으로 고치지 말 것).** 원본은 `~/msa/AGENTS.md`이고 이 블록은
@@ -195,6 +195,7 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
 - 스키마 변경은 **expand-contract**: 컬럼/테이블 제거는 "새것 추가 → 코드 전환 → 다음 릴리스에서 제거" 2단계로.
 - `@Enumerated(STRING)` enum에 값 추가 시 기존 CHECK 제약은 자동으로 안 넓혀짐 — 마이그레이션에 `ALTER` 포함할 것.
 - 재고 음수 방지 CHECK, 멱등성 유니크 인덱스 등 **DB 레벨 제약은 애플리케이션 로직과 별개로 유지**한다 (posselect #211 V3).
+- **마이그레이션 버전 번호는 `origin/main` 을 다시 확인하고 정한다.** 로컬 `ls` 로 정하면, 작업하는 동안 다른 세션이 같은 번호를 선점할 수 있다. 같은 버전이 둘이면 Flyway 는 부팅 자체를 거부한다(파드가 안 뜬다). push 직전에 `git fetch && git ls-tree origin/main <migration-dir>` 로 재확인할 것 (auth.api#29, 2026-08-22).
 
 ### 트랜잭션 / 정합성
 - **`@Transactional` 안에서 원격 HTTP 호출 금지**(보상 로직 없이). 로컬 롤백돼도 원격은 롤백 안 된다 (posselect #140, order.api 사례).
@@ -223,6 +224,7 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
 - 새 도메인은 기존 와일드카드 TLS 시크릿을 참조만 할 것 — Ingress에 `cert-manager.io/cluster-issuer` 어노테이션 추가 금지(와일드카드 인증서를 덮어쓰는 사고 이력).
 - Ingress는 `leedohyun-com-ingress.yaml`/`posselect-com-ingress.yaml` 두 파일에 host만 추가. 서비스별 개별 Ingress 금지.
 - CI는 main push → Docker 이미지 → CD(self-hosted runner) 즉시 프로덕션 반영. **문서만 바꿀 땐 커밋 메시지에 `[skip ci]`.**
+- **`~/msa` 매니페스트는 apply 전에 항상 `kubectl diff -f` 를 먼저 확인한다.** 이미지 태그(`:latest` ↔ 커밋 SHA)나 시크릿 값 등 라이브 상태와 어긋난(drift) 부분을 조용히 덮어써서 롤백되는 사고를 막기 위함이다.
 - 여러 서비스에 걸친 변경은 **배포 순서**를 먼저 설계할 것(예: gateway → front → api 순서를 지켜야 게스트 결제가 안 끊기는 사례, posselect #210).
 - `@posselect/ui` 변경은 Storybook만 자동 배포됨 — 소비 저장소 5개(customer/store/product/admin.front + posselect-shell)를 각각 재빌드해야 화면에 반영 (posselect #197).
 - **`[skip ci]`는 커밋 제목뿐 아니라 본문에서도 인식된다.** 다른 커밋을 인용하려고 본문에 그 문자열을 적으면 배포가 조용히 건너뛰어진다 — 실제로 product.api 캐시 수정이 이 때문에 배포되지 않았다(gateway#204).
