@@ -85,6 +85,8 @@ class OrderPaymentFinalizerIntegrationTest {
             item.setProductName("상품" + i);
             item.setPrice(BigDecimal.valueOf(1000));
             item.setQuantity(1);
+            item.setSellerId(1L);
+            item.setSellerName("포스셀렉트");
             order.addItem(item);
             total = total.add(BigDecimal.valueOf(1000));
         }
