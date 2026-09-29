@@ -85,13 +85,18 @@ public class ProductApiClient {
         throw new OrderStateException("order.catalogUnavailable");
     }
 
-    /** product.api가 확정해 준 상품/가격. 주문 금액 산정의 유일한 출처다. */
+    /**
+     * product.api가 확정해 준 상품/가격. 주문 금액 산정의 유일한 출처다.
+     * active=false 면 주문 불가(판매 중지·비공개·판매 기간 밖). maxPurchaseQuantity 는 상품 단위
+     * 1회 최대 구매 수량(null = 제한 없음, product.api#97).
+     */
     public record ResolvedVariant(
             Long variantId,
             Long productId,
             String productName,
             BigDecimal price,
-            boolean active) {
+            boolean active,
+            Integer maxPurchaseQuantity) {
     }
 
     /** @throws OrderStateException 재고 부족이거나 product.api 호출에 실패하면 (ApiExceptionHandler가 409로 응답) */

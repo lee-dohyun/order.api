@@ -1,6 +1,7 @@
 package com.dh.order.service;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -112,6 +113,8 @@ public class OrderService {
         order.setAddress1(request.address1());
         order.setAddress2(request.address2());
 
+        checkPurchaseLimits(request.items(), catalog);
+
         BigDecimal total = BigDecimal.ZERO;
         for (OrderItemRequest itemRequest : request.items()) {
             // 조회에서 빠졌거나 판매 중지된 variant는 주문을 만들지 않는다. 가격을 모르는 채로
@@ -141,6 +144,31 @@ public class OrderService {
         Order saved = orderRepository.save(order);
         // 게스트 토큰은 생성 응답에서만 내려준다 - 이후 조회 응답에는 실리지 않는다.
         return toResponse(saved, saved.getGuestToken());
+    }
+
+    /**
+     * 상품별 1회 최대 구매 수량(product.api#97). 같은 상품의 SKU 를 여러 줄로 나눠도 합계로 본다.
+     * product.api 장바구니도 같은 규칙으로 막지만, 주문 API 를 직접 부르면 장바구니를 거치지 않으므로
+     * 주문 금액과 마찬가지로 여기서 다시 확인한다. 조회에 없는 variant 는 아래 루프가 itemUnavailable 로 거른다.
+     */
+    private static void checkPurchaseLimits(List<OrderItemRequest> items, Map<Long, ResolvedVariant> catalog) {
+        Map<Long, Integer> quantityByProduct = new HashMap<>();
+        Map<Long, Integer> maxByProduct = new HashMap<>();
+        for (OrderItemRequest item : items) {
+            ResolvedVariant variant = catalog.get(item.variantId());
+            if (variant == null) {
+                continue;
+            }
+            quantityByProduct.merge(variant.productId(), item.quantity(), Integer::sum);
+            if (variant.maxPurchaseQuantity() != null) {
+                maxByProduct.put(variant.productId(), variant.maxPurchaseQuantity());
+            }
+        }
+        maxByProduct.forEach((productId, max) -> {
+            if (quantityByProduct.getOrDefault(productId, 0) > max) {
+                throw new OrderStateException("order.purchaseLimitExceeded", max);
+            }
+        });
     }
 
     public OrderResponse getOrder(Long id, Requester requester) {

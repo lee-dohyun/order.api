@@ -102,9 +102,37 @@ class OrderCreationPricingTest {
                 .hasMessage("order.itemUnavailable");
     }
 
+    /**
+     * product.api#97 - 1회 최대 구매 수량은 상품 단위다. 장바구니(product.api)를 거치지 않고 주문 API 를
+     * 직접 불러도 막혀야 하므로 여기서도 본다. 같은 상품의 SKU 를 나눠 담아도 합계로 판정한다.
+     */
+    @Test
+    void 상품별_최대_구매_수량을_넘으면_주문이_거부된다() {
+        when(productApiClient.resolveVariants(anyList())).thenReturn(Map.of(
+                41L, new ResolvedVariant(41L, 7L, "모니터 블랙", 카탈로그_가격, true, 2),
+                42L, new ResolvedVariant(42L, 7L, "모니터 화이트", 카탈로그_가격, true, 2)));
+        OrderCreateRequest 합계3 = new OrderCreateRequest(
+                "홍길동", "010-1234-5678", "서울시 어딘가", null, null, null, null, null,
+                List.of(new OrderItemRequest(41L, 1), new OrderItemRequest(42L, 2)));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, 합계3, 게스트()))
+                .isInstanceOf(OrderStateException.class)
+                .hasMessage("order.purchaseLimitExceeded");
+    }
+
+    @Test
+    void 최대_구매_수량_이하면_통과한다() {
+        when(productApiClient.resolveVariants(anyList())).thenReturn(Map.of(
+                42L, new ResolvedVariant(42L, 7L, "모니터", 카탈로그_가격, true, 2)));
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(42L, 2), 게스트());
+
+        assertThat(response.items()).singleElement().satisfies(item -> assertThat(item.quantity()).isEqualTo(2));
+    }
+
     private void 가격을_돌려주도록(Long variantId, BigDecimal price, boolean active) {
         when(productApiClient.resolveVariants(anyList())).thenReturn(
-                Map.of(variantId, new ResolvedVariant(variantId, 7L, "게이밍 모니터 27인치", price, active)));
+                Map.of(variantId, new ResolvedVariant(variantId, 7L, "게이밍 모니터 27인치", price, active, null)));
     }
 
     private OrderCreateRequest 주문요청(Long variantId, int quantity) {
