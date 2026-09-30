@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -14,7 +15,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.dh.order.config.ProductApiClient;
-import com.dh.order.config.ProductApiClient.ResolvedVariant;
+import com.dh.order.config.ProductApiClient.ResolvedOffer;
 import com.dh.order.domain.Order;
 import com.dh.order.domain.OrderItem;
 import com.dh.order.domain.OrderStatus;
@@ -41,13 +42,6 @@ import com.dh.order.repository.ShipmentRepository;
 @Service
 @Transactional(readOnly = true)
 public class OrderService {
-
-    /**
-     * 자사 판매자 식별자. 1P 로 시작하기로 한 결정(gateway#212 결정 0)에 따라 지금은 이 값 하나뿐이다.
-     * 3P 로 넘어가면 오퍼가 판매자를 결정하므로 이 상수는 사라진다.
-     */
-    private static final Long FIRST_PARTY_SELLER_ID = 1L;
-    private static final String FIRST_PARTY_SELLER_NAME = "포스셀렉트";
 
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
@@ -90,8 +84,15 @@ public class OrderService {
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public OrderResponse createOrder(Long channelId, OrderCreateRequest request, Requester requester) {
-        List<Long> variantIds = request.items().stream().map(OrderItemRequest::variantId).distinct().toList();
-        Map<Long, ResolvedVariant> catalog = productApiClient.resolveVariants(variantIds);
+        // offerId 로 온 품목은 그 오퍼로, variantId 만 온 품목은 product.api 가 고른 대표 오퍼로 확정한다
+        // (order.api#14). 두 경로 모두 가격·상품·판매자를 서버가 채운다 — 클라이언트 값은 쓰지 않는다.
+        List<Long> offerIds = request.items().stream()
+                .map(OrderItemRequest::offerId).filter(Objects::nonNull).distinct().toList();
+        List<Long> variantIds = request.items().stream()
+                .filter(i -> i.offerId() == null)
+                .map(OrderItemRequest::variantId).filter(Objects::nonNull).distinct().toList();
+        Map<Long, ResolvedOffer> byOfferId = productApiClient.resolveOffers(offerIds);
+        Map<Long, ResolvedOffer> byVariantId = productApiClient.resolveFeaturedOffersByVariant(variantIds);
 
         com.dh.order.domain.Channel channel = channelRepository.findById(channelId)
                 .orElseThrow(() -> new NoSuchElementException("channel not found: " + channelId));
@@ -113,31 +114,32 @@ public class OrderService {
         order.setAddress1(request.address1());
         order.setAddress2(request.address2());
 
-        checkPurchaseLimits(request.items(), catalog);
+        checkPurchaseLimits(request.items(), byOfferId, byVariantId);
 
         BigDecimal total = BigDecimal.ZERO;
         for (OrderItemRequest itemRequest : request.items()) {
-            // 조회에서 빠졌거나 판매 중지된 variant는 주문을 만들지 않는다. 가격을 모르는 채로
-            // 주문을 생성하면 결제 금액을 확정할 수 없다.
-            ResolvedVariant variant = catalog.get(itemRequest.variantId());
-            if (variant == null || !variant.active()) {
+            // 조회에서 빠졌거나(없는 오퍼, ACTIVE 오퍼가 없는 SKU) 주문 불가인 오퍼는 주문을 만들지
+            // 않는다. 가격을 모르는 채로 주문을 생성하면 결제 금액을 확정할 수 없다. active 는 오퍼
+            // 상태뿐 아니라 숨김 상품·판매 기간·판매자 정지까지 합친 값이다(product.api#108).
+            ResolvedOffer offer = offerFor(itemRequest, byOfferId, byVariantId);
+            if (offer == null || !offer.active()) {
                 throw new OrderStateException("order.itemUnavailable");
             }
             OrderItem item = new OrderItem();
-            // productId/productName도 클라이언트 값을 쓰지 않는다 — variantId와 어긋난 조합을
-            // 보내 다른 상품인 것처럼 기록되게 하는 걸 막는다.
-            item.setProductId(variant.productId());
-            item.setVariantId(variant.variantId());
-            item.setProductName(variant.productName());
-            item.setPrice(variant.price());
+            // productId/variantId/productName 도 클라이언트 값을 쓰지 않는다 — 어긋난 조합을 보내
+            // 다른 상품인 것처럼 기록되게 하는 걸 막는다. variantId 는 재고 차감 기준 키다.
+            item.setOfferId(offer.offerId());
+            item.setProductId(offer.productId());
+            item.setVariantId(offer.variantId());
+            item.setProductName(offer.productName());
+            item.setPrice(offer.price());
             item.setQuantity(itemRequest.quantity());
-            // 지금은 판매자가 자사 한 곳뿐이라 상수다. 3단계(order.api#14)에서 오퍼 참조로 바뀌면
-            // offers/resolve 응답의 판매자를 그대로 옮겨 담는 자리가 된다. 상수인 동안에도
-            // 값을 남겨 두는 이유는 소급이 불가능하기 때문이다(order.api#13).
-            item.setSellerId(FIRST_PARTY_SELLER_ID);
-            item.setSellerName(FIRST_PARTY_SELLER_NAME);
+            // 판매자는 확정된 오퍼의 판매자를 스냅샷으로 옮긴다(order.api#13). 스냅샷이라 이후
+            // 판매자가 상호를 바꾸거나 나가도 이 주문의 기록은 바뀌지 않는다.
+            item.setSellerId(offer.sellerId());
+            item.setSellerName(offer.sellerName());
             order.addItem(item);
-            total = total.add(variant.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
+            total = total.add(offer.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
         }
         order.setTotalPrice(total);
 
@@ -151,17 +153,32 @@ public class OrderService {
      * product.api 장바구니도 같은 규칙으로 막지만, 주문 API 를 직접 부르면 장바구니를 거치지 않으므로
      * 주문 금액과 마찬가지로 여기서 다시 확인한다. 조회에 없는 variant 는 아래 루프가 itemUnavailable 로 거른다.
      */
-    private static void checkPurchaseLimits(List<OrderItemRequest> items, Map<Long, ResolvedVariant> catalog) {
+    /**
+     * 품목이 가리키는 확정 오퍼. {@code offerId} 로 온 품목은 그 오퍼, {@code variantId} 만 온 품목은
+     * product.api 가 고른 대표 오퍼다(order.api#14). 수량 제한 검사와 아래 금액 산정이 <b>같은 오퍼</b>를
+     * 봐야 하므로 찾는 코드를 한 곳에 둔다.
+     */
+    private static ResolvedOffer offerFor(OrderItemRequest item, Map<Long, ResolvedOffer> byOfferId,
+            Map<Long, ResolvedOffer> byVariantId) {
+        return item.offerId() != null ? byOfferId.get(item.offerId()) : byVariantId.get(item.variantId());
+    }
+
+    /**
+     * 상품별 1회 최대 구매 수량 검사(product.api#97). 한도는 오퍼 응답의 {@code maxPurchaseQuantity} 에서
+     * 오고, 같은 상품의 SKU·오퍼를 나눠 담아 한도를 넘기는 것을 막기 위해 productId 로 합산한다.
+     */
+    private static void checkPurchaseLimits(List<OrderItemRequest> items, Map<Long, ResolvedOffer> byOfferId,
+            Map<Long, ResolvedOffer> byVariantId) {
         Map<Long, Integer> quantityByProduct = new HashMap<>();
         Map<Long, Integer> maxByProduct = new HashMap<>();
         for (OrderItemRequest item : items) {
-            ResolvedVariant variant = catalog.get(item.variantId());
-            if (variant == null) {
+            ResolvedOffer offer = offerFor(item, byOfferId, byVariantId);
+            if (offer == null) {
                 continue;
             }
-            quantityByProduct.merge(variant.productId(), item.quantity(), Integer::sum);
-            if (variant.maxPurchaseQuantity() != null) {
-                maxByProduct.put(variant.productId(), variant.maxPurchaseQuantity());
+            quantityByProduct.merge(offer.productId(), item.quantity(), Integer::sum);
+            if (offer.maxPurchaseQuantity() != null) {
+                maxByProduct.put(offer.productId(), offer.maxPurchaseQuantity());
             }
         }
         maxByProduct.forEach((productId, max) -> {
@@ -367,7 +384,7 @@ public class OrderService {
         return items.stream()
                 .map(i -> new OrderItemResponse(
                         i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity(),
-                        i.getSellerId(), i.getSellerName()))
+                        i.getSellerId(), i.getSellerName(), i.getOfferId()))
                 .toList();
     }
 

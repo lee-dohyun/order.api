@@ -48,6 +48,13 @@ public class OrderItem {
     private Integer quantity;
 
     /**
+     * 주문 확정에 쓰인 product.api 오퍼 id (order.api#14). {@code sellerId} 와 성격이 반대다 —
+     * 스냅샷이 아니라 참조라 오퍼가 끝나면 끊긴다(FK 없음, 별도 DB). 이 컬럼 도입 전 주문은 null.
+     */
+    @Column(name = "offer_id")
+    private Long offerId;
+
+    /**
      * 주문 시점 판매자 식별자 <b>스냅샷</b>. 1 = 자사(1P).
      *
      * <p>참조가 아니라 스냅샷이라 FK 가 없다 — 판매자가 나가도 "누가 팔았는가"는 남아야 한다.
@@ -58,6 +65,7 @@ public class OrderItem {
     private Long sellerId;
 
     /** 주문 시점 판매자 상호 스냅샷. 표시·CS 용도. */
-    @Column(name = "seller_name", nullable = false, length = 100)
+    // 상호가 이제 상수가 아니라 sellers.name(VARCHAR 200)에서 온다 - V7 에서 넓혔다.
+    @Column(name = "seller_name", nullable = false, length = 200)
     private String sellerName;
 }

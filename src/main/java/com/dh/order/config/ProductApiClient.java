@@ -41,21 +41,49 @@ public class ProductApiClient {
     }
 
     /**
-     * variantId만 넘겨 상품/가격을 확정받는다. 클라이언트가 보낸 가격·상품명·productId는 신뢰하지
-     * 않고 전부 이 응답으로 대체한다 — Redmine posselect #232.
+     * offerId 로 가격·상품·판매자를 확정받는다(order.api#14). 클라이언트가 보낸 가격·상품명·판매자는
+     * 신뢰하지 않고 전부 이 응답으로 대체한다 — Redmine posselect #232 / product.api#5.
      *
-     * <p>존재하지 않는 variantId는 응답에서 빠지므로 호출자가 요청 건수와 대조해야 한다.
+     * <p>존재하지 않는 id 는 응답에서 빠지므로 호출자가 요청 건수와 대조해야 한다. 결과 맵의 키는 offerId 다.
      *
      * @throws OrderStateException product.api 호출에 실패하면. 가격을 모르는 채로 주문을 만드는
      *         것보다 주문 생성을 실패시키는 편이 안전하다.
      */
-    @CircuitBreaker(name = "productApi", fallbackMethod = "resolveVariantsFallback")
-    public Map<Long, ResolvedVariant> resolveVariants(List<Long> variantIds) {
-        if (variantIds.isEmpty()) {
-            return Map.of();
+    @CircuitBreaker(name = "productApi", fallbackMethod = "resolveOffersFallback")
+    public Map<Long, ResolvedOffer> resolveOffers(List<Long> offerIds) {
+        return fetchOffers("ids", offerIds).stream()
+                .collect(Collectors.toMap(ResolvedOffer::offerId, o -> o));
+    }
+
+    public Map<Long, ResolvedOffer> resolveOffersFallback(List<Long> offerIds, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 상품 서비스 호출 불가 (offerIds={})", offerIds, t);
+        throw new OrderStateException("order.catalogUnavailable");
+    }
+
+    /**
+     * variantId 만 아는 품목을 위해 SKU 별 <b>대표 오퍼</b>를 product.api 가 골라 확정해 준다
+     * (product.api#69). 지금 장바구니와 주문을 만드는 product.front 가 variantId 만 보내므로, 이
+     * 경로 없이 오퍼로 전환하면 그 순간 결제가 깨진다. 결과 맵의 키는 variantId 다.
+     *
+     * <p>ACTIVE 오퍼가 없는 SKU 는 응답에서 빠진다 — 호출자가 누락으로 판정한다.
+     */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "resolveFeaturedOffersByVariantFallback")
+    public Map<Long, ResolvedOffer> resolveFeaturedOffersByVariant(List<Long> variantIds) {
+        return fetchOffers("variantIds", variantIds).stream()
+                .collect(Collectors.toMap(ResolvedOffer::variantId, o -> o));
+    }
+
+    public Map<Long, ResolvedOffer> resolveFeaturedOffersByVariantFallback(List<Long> variantIds, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 상품 서비스 호출 불가 (variantIds={})", variantIds, t);
+        throw new OrderStateException("order.catalogUnavailable");
+    }
+
+    private List<ResolvedOffer> fetchOffers(String param, List<Long> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
         }
-        String ids = variantIds.stream().map(String::valueOf).collect(Collectors.joining(","));
-        URI uri = URI.create(baseUrl + "/internal/variants/resolve?ids=" + ids);
+        String joined = ids.stream().map(String::valueOf).collect(Collectors.joining(","));
+        URI uri = URI.create(baseUrl + "/internal/offers/resolve?" + param + "=" + joined);
         try {
             HttpRequest request = HttpRequest.newBuilder(uri)
                     .timeout(Duration.ofSeconds(2))
@@ -63,38 +91,41 @@ public class ProductApiClient {
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 400) {
-                log.warn("상품 가격 조회 실패 (status={}, body={})", response.statusCode(), response.body());
+                log.warn("오퍼 확정 조회 실패 (status={}, body={})", response.statusCode(), response.body());
                 throw new OrderStateException("order.catalogUnavailable");
             }
-            List<ResolvedVariant> resolved = objectMapper.readValue(
-                    response.body(), new TypeReference<List<ResolvedVariant>>() {
-                    });
-            return resolved.stream().collect(Collectors.toMap(ResolvedVariant::variantId, v -> v));
+            return objectMapper.readValue(response.body(), new TypeReference<List<ResolvedOffer>>() {
+            });
         } catch (IOException e) {
-            log.warn("상품 서비스 연결 실패 (variantIds={})", variantIds, e);
+            log.warn("상품 서비스 연결 실패 ({}={})", param, ids, e);
             throw new OrderStateException("order.catalogUnavailable");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("상품 서비스 호출 중단 (variantIds={})", variantIds, e);
+            log.warn("상품 서비스 호출 중단 ({}={})", param, ids, e);
             throw new OrderStateException("order.catalogUnavailable");
         }
     }
 
-    public Map<Long, ResolvedVariant> resolveVariantsFallback(List<Long> variantIds, Throwable t) {
-        log.warn("서킷브레이커/폴백 동작 - 상품 서비스 호출 불가 (variantIds={})", variantIds, t);
-        throw new OrderStateException("order.catalogUnavailable");
-    }
-
     /**
-     * product.api가 확정해 준 상품/가격. 주문 금액 산정의 유일한 출처다.
-     * active=false 면 주문 불가(판매 중지·비공개·판매 기간 밖). maxPurchaseQuantity 는 상품 단위
-     * 1회 최대 구매 수량(null = 제한 없음, product.api#97).
+     * product.api 가 확정해 준 오퍼({@code OfferResolveResponse}). 주문 금액과 판매자 스냅샷의
+     * 유일한 출처다. variantId 는 재고 차감 기준 키로 계속 쓴다(1P 재고는 variant 단위).
+     *
+     * <p>{@code active=false} 면 주문 불가다 — 오퍼 상태만이 아니라 숨김 상품·판매 기간 밖·판매자
+     * 정지·해지까지 합친 값이다(product.api#108). {@code maxPurchaseQuantity} 는 상품 단위 1회 최대
+     * 구매 수량(null = 제한 없음, product.api#97). 이 두 값이 오퍼 응답에 실리기 전에 주문을 오퍼
+     * 기준으로 바꾸면 그 차단들이 한꺼번에 사라진다.
      */
-    public record ResolvedVariant(
+    public record ResolvedOffer(
+            Long offerId,
             Long variantId,
             Long productId,
             String productName,
+            Long sellerId,
+            String sellerName,
             BigDecimal price,
+            BigDecimal shippingFee,
+            boolean freeShipping,
+            Short leadTimeDays,
             boolean active,
             Integer maxPurchaseQuantity) {
     }

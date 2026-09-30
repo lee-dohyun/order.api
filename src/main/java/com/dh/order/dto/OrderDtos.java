@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -12,16 +13,25 @@ import jakarta.validation.constraints.NotNull;
 
 public class OrderDtos {
 
-    // order-api는 catalogdb에 접근하지 않으므로, 주문 시점의 상품명/가격은 클라이언트(카트)가 스냅샷으로
-    // 함께 보냄. variantId는 결제 확정 시 product.api 재고 차감의 기준 키.
     /**
-     * variantId와 수량만 받는다. 상품명·가격·productId는 서버가 product.api에서 확정하므로
-     * 요청 본문에 있어도 무시된다 — 예전엔 price를 그대로 믿어서 임의 금액 주문이 가능했다(#232).
-     * 기존 프론트가 아직 그 필드들을 함께 보내지만 Jackson이 조용히 버린다.
+     * 품목은 {@code offerId} 또는 {@code variantId} 중 <b>정확히 하나</b>와 수량만 받는다(order.api#14).
+     * 상품명·가격·productId·판매자는 서버가 product.api 에서 확정하므로 요청 본문에 있어도 무시된다 —
+     * 예전엔 price 를 그대로 믿어서 임의 금액 주문이 가능했다(#232). 기존 프론트가 아직 그 필드들을
+     * 함께 보내지만 Jackson 이 조용히 버린다.
+     *
+     * <p>{@code variantId} 경로는 호환용이다. 장바구니·주문을 만드는 product.front 가 아직
+     * variantId 만 알고 있어서, 그 경우 product.api 가 SKU 의 대표 오퍼를 골라 확정한다(product.api#69).
      */
     public record OrderItemRequest(
-            @NotNull Long variantId,
+            Long offerId,
+            Long variantId,
             @NotNull @Min(1) Integer quantity) {
+
+        /** 둘 다 주면 어느 오퍼로 샀는지 모호하고, 둘 다 없으면 무엇을 샀는지 알 수 없다 — 400. */
+        @AssertTrue(message = "offerId 와 variantId 중 정확히 하나를 지정해야 한다")
+        public boolean isExactlyOneTarget() {
+            return (offerId == null) != (variantId == null);
+        }
     }
 
     public record OrderCreateRequest(
@@ -45,7 +55,7 @@ public class OrderDtos {
      */
     public record OrderItemResponse(
             Long productId, Long variantId, String productName, BigDecimal price, Integer quantity,
-            Long sellerId, String sellerName) {
+            Long sellerId, String sellerName, Long offerId) {
     }
 
     /**
