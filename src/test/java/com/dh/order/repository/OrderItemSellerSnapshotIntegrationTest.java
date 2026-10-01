@@ -13,6 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import java.time.Duration;
 
 /**
  * V6 판매자 스냅샷 마이그레이션 검증 (gateway#212 0단계, order.api#13).
@@ -28,7 +29,8 @@ class OrderItemSellerSnapshotIntegrationTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withStartupTimeout(Duration.ofMinutes(3));
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
