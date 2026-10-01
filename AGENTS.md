@@ -77,31 +77,35 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
   새 쓰기 메서드를 옆에 추가하면서 이걸 빠뜨리는 게 정확히 #211의 재현 경로다. 새 쓰기 경로는 가급적
   별도 서비스로 분리한다.
 
-### 원격 호출과 보상 트랜잭션 (알려진 미해결 결함)
+### 원격 호출과 보상 트랜잭션 (2026-10-01 코드 대조로 갱신)
 
-- **`payOrder`에는 보상 로직이 없다.** `@Transactional` 안에서 `productApiClient.deductInventory(...)`를
-  호출하고, 그 뒤에 `PAID` 전이 → `Payment` 저장 → `notificationService.notifyPaid(...)`가 이어진다.
-  차감 이후 무엇이든 실패하면 **재고는 빠진 채 주문은 PAID가 아닌 상태**로 남고 아무도 되돌리지 않는다.
-  `payOrder`를 건드리는 변경은 이걸 해결하거나, 해결하지 않는다는 사실을 명시해야 한다(캐논 §3).
-- 메일 발송도 트랜잭션 **안**에 있다. `OrderNotificationService.notifyPaid`가 `MailException`을 흡수해서
-  결제를 실패시키지는 않지만, SMTP를 기다리는 동안 DB 트랜잭션을 붙잡고 있다. 롤백 불가능한 부수효과는
-  커밋 이후로 빼는 게 맞다.
+- **`payOrder`에는 보상 로직이 있다**(2026-08-21 추가). `payOrder`는 `NOT_SUPPORTED`이고 순서는
+  ① `productApiClient.deductInventory`(트랜잭션 밖) → ② `OrderPaymentFinalizer.markPaid`(별도 빈의
+  `@Transactional`, PAID 전이 + `Payment` 저장) → ③ `notificationService.notifyPaid`(커밋 이후)다.
+  ②가 실패하면 `handlePaymentCommitFailure`가 주문 상태를 다시 읽어 **이미 PAID면(동시 결제 경합에서 짐)
+  복원하지 않고**, 아니면 `restoreInventory`로 방금 나간 차감을 되돌린다. 이 분기를 합치지 말 것 —
+  경합에서 진 쪽이 복원하면 이긴 요청의 정당한 차감을 되돌린다.
+- **남은 틈은 #34 에 있다.** ① 복원 호출이 실패하면 `log.error("... 수동 복원 필요")`뿐이다(결제 보상·환불
+  둘 다, 재시도도 기록도 없다). ② ①과 ② 사이에 프로세스가 죽으면 예외 경로가 돌지 않아 아무도 되돌리지
+  않는다. ③ 보상 복원 뒤 같은 주문을 다시 결제하면 product.api의 차감 멱등 판정(차감 이력 존재)에 걸려
+  재고가 안 빠진다(코드 읽기로 확인, 미재현). `payOrder`·환불을 건드리는 변경은 이 셋을 해결하거나,
+  해결하지 않는다는 사실을 명시해야 한다(캐논 §3).
 - **환불의 재고 복원은 "없는" 게 아니라 "약하다".** `OrderController.refund`가 트랜잭션 밖에서
   ① 아이템 조회 → ② `orderService.refundOrder`(REFUNDED 전이 + Refund 저장, 커밋) →
-  ③ `productApiClient.restoreInventory`를 `try/catch`로 호출하는데, 실패 시 하는 일이
-  `logger.error("환불은 성공했으나 재고 복원 호출 실패 - 수동 복원 필요")` 뿐이다. 재시도도 큐도 없다.
-  환불 로직을 건드릴 때마다 이 점을 짚고, 고친다면 트랜잭션을 넓히는 게 아니라 재시도/아웃박스로 간다.
+  ③ `productApiClient.restoreInventory`를 `try/catch`로 호출한다. 고친다면 트랜잭션을 넓히는 게 아니라
+  재시도/아웃박스로 간다.
 
 ### 멱등성
 
-- `payOrder`의 방어는 `if (order.getStatus() != CREATED) throw`뿐이다. 상태 가드는 필요하지만 동시성에는
-  **불충분**하다(두 요청이 동시에 `CREATED`를 읽을 수 있다). 실제로 막는 건 DB 유니크 제약이나
-  `SELECT ... FOR UPDATE`인데, 이 저장소의 `orders`/`payments`에는 아직 없다.
+- `payOrder`의 상태 가드(`CREATED`가 아니면 거부)는 동시성에는 불충분하다(두 요청이 동시에 `CREATED`를
+  읽을 수 있다). `markPaid`가 행을 다시 읽어 창을 좁히고, **최종 방어는 `payments.order_id` UNIQUE
+  제약**(`V3__payments_and_refunds.sql`)이다. `SELECT ... FOR UPDATE`는 쓰지 않는다.
 - 실질적인 중복 차감 방어는 product.api 쪽 `V3__inventory_deduct_idempotency.sql`의 부분 유니크 인덱스
   `(order_id, inventory_id) WHERE type = 'ORDER_DEDUCT'`이고, **멱등성 키는 주문 ID**다
   (`deductInventory`가 `{"orderId": ..., "items": [...]}`를 보낸다). 여기서 보내는 키를 바꾸면 방어가
-  요란하게 깨지는 게 아니라 **조용히 사라진다.**
-- `createShipment`의 `findByOrderId(...).isPresent()` 중복 검사도 같은 read-then-write 경합이 있다.
+  요란하게 깨지는 게 아니라 **조용히 사라진다.** 복원도 주문 ID당 한 번만 반영된다(`ORDER_RESTORE`).
+- `createShipment`의 `findByOrderId(...).isPresent()` 중복 검사에는 read-then-write 경합이 있다. 최종 방어는
+  `shipments.order_id` UNIQUE 제약(`V1__baseline.sql`)이다.
 
 ## 인증과 소유권
 
