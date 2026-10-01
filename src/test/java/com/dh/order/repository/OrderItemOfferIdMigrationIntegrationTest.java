@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import java.time.Duration;
 
 /**
  * V7 마이그레이션 검증 (order.api#14, gateway#212 3단계).
@@ -27,7 +28,8 @@ class OrderItemOfferIdMigrationIntegrationTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withStartupTimeout(Duration.ofMinutes(3));
 
     @Autowired
     private JdbcTemplate jdbcTemplate;

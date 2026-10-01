@@ -3,6 +3,7 @@ package com.dh.order.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +35,8 @@ class PurchaseSummaryIntegrationTest {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withStartupTimeout(Duration.ofMinutes(3));
 
     @Autowired
     private OrderRepository orderRepository;
