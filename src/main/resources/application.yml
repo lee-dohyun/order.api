@@ -57,6 +57,14 @@ app:
   mail-from: ${MAIL_FROM:customer-service@posselect.com}
   # 주문 금액의 저장 통화. 지금은 KRW 단일 저장이고, 표시 시점 환율 변환은 #108의 몫이다.
   base-currency: ${BASE_CURRENCY:KRW}
+  # 재고 보상(order.api#34). watch-timeout 은 "결제 시도가 이만큼 지나도 확정되지 않으면 중간에 죽은
+  # 것으로 본다"는 기준이라, 차감 호출 타임아웃(2초)보다 충분히 커야 한다 — 살아 있는 결제의 재고를
+  # 되돌리지 않기 위해서다.
+  inventory-compensation:
+    poll-interval: ${INVENTORY_COMPENSATION_POLL_INTERVAL:60s}
+    watch-timeout: ${INVENTORY_COMPENSATION_WATCH_TIMEOUT:5m}
+    retry-delay: ${INVENTORY_COMPENSATION_RETRY_DELAY:1m}
+    max-retry-delay: ${INVENTORY_COMPENSATION_MAX_RETRY_DELAY:1h}
 
 resilience4j:
   circuitbreaker:

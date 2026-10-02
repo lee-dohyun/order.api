@@ -18,7 +18,7 @@ import com.dh.order.config.AdminJwtVerifier;
 import com.dh.order.config.AdminPrincipal;
 import com.dh.order.config.CustomerJwtVerifier;
 import com.dh.order.config.Messages;
-import com.dh.order.config.ProductApiClient;
+import com.dh.order.service.InventoryCompensator;
 import com.dh.order.service.OrderService;
 
 /**
@@ -43,7 +43,7 @@ class OrderControllerAdminRoleTest {
     @MockitoBean
     private CustomerJwtVerifier customerJwtVerifier;
     @MockitoBean
-    private ProductApiClient productApiClient;
+    private InventoryCompensator inventoryCompensator;
     // @RestControllerAdvice(ApiExceptionHandler)가 @WebMvcTest 슬라이스에 함께 올라오므로 필요하다
     @MockitoBean
     private Messages messages;

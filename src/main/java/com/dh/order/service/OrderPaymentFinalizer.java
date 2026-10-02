@@ -29,10 +29,13 @@ public class OrderPaymentFinalizer {
 
     private final OrderRepository orderRepository;
     private final PaymentRepository paymentRepository;
+    private final InventoryCompensationStore inventoryCompensationStore;
 
-    public OrderPaymentFinalizer(OrderRepository orderRepository, PaymentRepository paymentRepository) {
+    public OrderPaymentFinalizer(OrderRepository orderRepository, PaymentRepository paymentRepository,
+            InventoryCompensationStore inventoryCompensationStore) {
         this.orderRepository = orderRepository;
         this.paymentRepository = paymentRepository;
+        this.inventoryCompensationStore = inventoryCompensationStore;
     }
 
     /**
@@ -42,8 +45,13 @@ public class OrderPaymentFinalizer {
      * 할 수 있다). 최종 방어는 {@code payments.order_id} UNIQUE 제약(V3)이고, 두 경우 모두
      * payOrder 쪽에서 "이미 결제됨"과 "진짜 실패"를 구분해 처리한다.
      *
+     * <p>결제 시도 행({@code inventory_compensations})을 같은 트랜잭션에서 닫는다(#34). 닫지 못했다면
+     * 스케줄러가 이 시도를 죽은 것으로 보고 재고 복원을 시작한 것이므로 결제를 확정하지 않는다 -
+     * 확정하면 재고는 되돌려졌는데 주문은 PAID 인 초과 판매가 된다.
+     *
      * @throws NoSuchElementException 주문이 없으면(정상 흐름에서는 사실상 발생하지 않는다)
-     * @throws IllegalStateException 이미 CREATED가 아니면(동시 결제 경합에서 진 경우)
+     * @throws IllegalStateException 이미 CREATED가 아니거나(동시 결제 경합에서 진 경우), 결제 시도
+     *         행이 열려 있지 않으면(복원이 시작됐거나 {@code beginPayment} 없이 불린 경우)
      */
     @Transactional
     public Order markPaid(Long orderId) {
@@ -51,6 +59,9 @@ public class OrderPaymentFinalizer {
                 .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
         if (order.getStatus() != OrderStatus.CREATED) {
             throw new IllegalStateException("order already committed by a concurrent request: " + orderId);
+        }
+        if (!inventoryCompensationStore.settlePayment(orderId)) {
+            throw new IllegalStateException("payment attempt is no longer open (restore in progress): " + orderId);
         }
         order.setStatus(OrderStatus.PAID);
         order.setPaidAt(LocalDateTime.now());

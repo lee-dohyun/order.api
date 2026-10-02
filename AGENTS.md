@@ -85,15 +85,27 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
   ②가 실패하면 `handlePaymentCommitFailure`가 주문 상태를 다시 읽어 **이미 PAID면(동시 결제 경합에서 짐)
   복원하지 않고**, 아니면 `restoreInventory`로 방금 나간 차감을 되돌린다. 이 분기를 합치지 말 것 —
   경합에서 진 쪽이 복원하면 이긴 요청의 정당한 차감을 되돌린다.
-- **남은 틈은 #34 에 있다.** ① 복원 호출이 실패하면 `log.error("... 수동 복원 필요")`뿐이다(결제 보상·환불
-  둘 다, 재시도도 기록도 없다). ② ①과 ② 사이에 프로세스가 죽으면 예외 경로가 돌지 않아 아무도 되돌리지
-  않는다. ③ 보상 복원 뒤 같은 주문을 다시 결제하면 product.api의 차감 멱등 판정(차감 이력 존재)에 걸려
-  재고가 안 빠진다(코드 읽기로 확인, 미재현). `payOrder`·환불을 건드리는 변경은 이 셋을 해결하거나,
-  해결하지 않는다는 사실을 명시해야 한다(캐논 §3).
-- **환불의 재고 복원은 "없는" 게 아니라 "약하다".** `OrderController.refund`가 트랜잭션 밖에서
-  ① 아이템 조회 → ② `orderService.refundOrder`(REFUNDED 전이 + Refund 저장, 커밋) →
-  ③ `productApiClient.restoreInventory`를 `try/catch`로 호출한다. 고친다면 트랜잭션을 넓히는 게 아니라
-  재시도/아웃박스로 간다.
+- **재고 보상은 `inventory_compensations`(V8) 미결 기록으로 끝까지 끌고 간다**(#34, 2026-10-02).
+  `payOrder`는 차감을 보내기 **전에** `InventoryCompensationStore.beginPayment`로 결제 시도를 `WATCHING`으로
+  남기고, `markPaid`가 PAID 전이와 **같은 트랜잭션에서** 그 행을 `DONE`으로 닫는다. 환불은 `refundOrder`가
+  REFUNDED 전이와 같은 트랜잭션에서 `RESTORING` 행을 남긴다. `InventoryCompensator`가 ① 결제 확정 실패
+  직후·환불 직후 즉시 복원하고 ② `@Scheduled sweep()`(기본 60초)으로 방치된 `WATCHING`(기본 5분 —
+  차감과 확정 사이에 파드가 죽은 시도)과 실패한 `RESTORING`을 성공할 때까지 재시도한다(간격은 1분부터
+  2배씩, 상한 1시간).
+  - **순서가 계약이다**: `beginPayment` → `deductInventory` → `markPaid`. 기록을 차감 뒤로 옮기면 크래시
+    창이 다시 열린다.
+  - **`RESTORING`인 주문은 결제를 받지 않고(`beginPayment` false), `markPaid`도 확정을 거부한다.** 이 둘을
+    풀면 "재고는 되돌려졌는데 주문은 PAID"인 초과 판매가 된다.
+  - 상태 전이는 전부 **조건부 UPDATE 한 문장**이다(영향 행 수 = 전이를 얻었는가). 읽고-판단하고-쓰기로
+    나누지 말 것 — 결제 요청과 스케줄러, 파드 여러 개가 같은 행을 동시에 집는다.
+  - 복원이 여러 번 나가도 안전한 근거는 product.api 쪽 멱등 판정(되돌릴 차감이 없으면 무시,
+    product.api#116)이다. 그쪽 판정을 바꾸면 이 재시도가 재고를 불린다.
+  - 남은 한계: 복원이 계속 실패해도 알림은 없다(로그 `재고 복원 실패 - 재시도 예정`과
+    `inventory_compensations.attempts/last_error`뿐). 차감 요청이 `watch-timeout`보다 늦게 product.api에
+    도착하는 경우는 막지 못한다(HTTP 타임아웃 2초 대비 5분).
+- **환불의 재고 복원**은 `OrderController.refund`가 ① `orderService.refundOrder`(REFUNDED 전이 + Refund 저장 +
+  복원 예약, 커밋) → ② `inventoryCompensator.restoreRefundNow`(트랜잭션 밖) 순서로 한다. 트랜잭션을 넓혀
+  원격 호출을 안에 넣지 말 것.
 
 ### 멱등성
 
@@ -146,11 +158,11 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
 
 ## 테스트가 무엇을 증명하고 무엇을 못 하는가
 
-**이 저장소에는 `src/test/resources`도, 테스트용 데이터소스도, Testcontainers도 없다.** `build.gradle`의
-테스트 의존성은 `spring-boot-starter-test`와 `spring-restdocs-mockmvc`뿐이고, 모든 테스트가 Mockito
-단위 테스트다(`OrderServiceTest`는 `@ExtendWith(MockitoExtension.class)`).
+테스트는 두 종류다. Mockito 단위 테스트(`OrderServiceTest` 등)와 Testcontainers 실 Postgres 통합 테스트
+(`*IntegrationTest` — `@SpringBootTest` + `@ServiceConnection`). `src/test/resources/application.properties`는
+재고 보상 스케줄러를 테스트에서 꺼 두는 용도 하나뿐이다(#34).
 
-즉 `./gradlew test`는 **트랜잭션 전파도 멱등성도 마이그레이션 누락도 증명하지 못한다.** 목 리포지토리는
+Mockito 단위 테스트만으로는 **트랜잭션 전파도 멱등성도 마이그레이션 누락도 증명하지 못한다.** 목 리포지토리는
 읽기 전용 트랜잭션이 버렸을 save를 "성공"으로 보고한다(캐논 §3가 명시). 그런 변경은 배포된 엔드포인트를
 같은 키로 두 번 호출하고 **행을 다시 읽어** 1회만 반영됐는지 확인한 뒤 데이터를 원복하는 것까지가 한 세트다.
 로컬에서 더 강한 근거가 필요하면 product.api의 `InventoryDeductionIntegrationTest`(`@SpringBootTest` +

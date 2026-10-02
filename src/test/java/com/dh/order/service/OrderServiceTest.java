@@ -58,6 +58,10 @@ class OrderServiceTest {
     private com.dh.order.repository.ChannelRepository channelRepository;
     @Mock
     private OrderPaymentFinalizer orderPaymentFinalizer;
+    @Mock
+    private InventoryCompensationStore inventoryCompensationStore;
+    @Mock
+    private InventoryCompensator inventoryCompensator;
 
     @InjectMocks
     private OrderService orderService;
@@ -78,6 +82,34 @@ class OrderServiceTest {
         item.setQuantity(1);
         order.addItem(item);
         adminRequester = new Requester(null, null, null, true);
+        // 기본은 "결제 시도를 받을 수 있다". 가드에서 먼저 걸리는 테스트는 이 스텁을 쓰지 않는다.
+        org.mockito.Mockito.lenient().when(inventoryCompensationStore.beginPayment(1L)).thenReturn(true);
+    }
+
+    @Test
+    void payOrder_ShouldRecordAttemptBeforeDeductingInventory() {
+        // 차감 뒤에 기록하면 그 사이에 죽었을 때 흔적이 없다(#34) - 순서가 계약이다.
+        given(orderRepository.findByIdWithItems(1L)).willReturn(Optional.of(order));
+        given(orderPaymentFinalizer.markPaid(1L)).willReturn(order);
+
+        orderService.payOrder(1L, adminRequester);
+
+        InOrder inOrder = Mockito.inOrder(inventoryCompensationStore, productApiClient);
+        inOrder.verify(inventoryCompensationStore).beginPayment(1L);
+        inOrder.verify(productApiClient).deductInventory(eq(1L), any());
+    }
+
+    @Test
+    void payOrder_ShouldRejectWithoutDeducting_WhenRestoreIsInProgress() {
+        given(orderRepository.findByIdWithItems(1L)).willReturn(Optional.of(order));
+        given(inventoryCompensationStore.beginPayment(1L)).willReturn(false);
+
+        assertThatThrownBy(() -> orderService.payOrder(1L, adminRequester))
+                .isInstanceOf(OrderStateException.class)
+                .hasMessageContaining("order.inventoryUnavailable");
+
+        verifyNoInteractions(productApiClient);
+        verifyNoInteractions(orderPaymentFinalizer);
     }
 
     @Test
@@ -107,7 +139,7 @@ class OrderServiceTest {
         inOrder.verify(notificationService).notifyPaid(order);
 
         // 성공 경로에서는 보상 복원이 절대 호출되지 않는다.
-        verify(productApiClient, never()).restoreInventory(any(), any());
+        verify(inventoryCompensator, never()).compensatePaymentNow(any());
     }
 
     @Test
@@ -152,7 +184,7 @@ class OrderServiceTest {
                 .hasMessageContaining("order.paymentConfirmationFailed");
 
         verify(productApiClient).deductInventory(eq(1L), any());
-        verify(productApiClient).restoreInventory(eq(1L), any());
+        verify(inventoryCompensator).compensatePaymentNow(1L);
         verifyNoInteractions(notificationService);
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CREATED);
     }
@@ -176,7 +208,7 @@ class OrderServiceTest {
                 .hasMessageContaining("order.alreadyPaid");
 
         verify(productApiClient).deductInventory(eq(1L), any());
-        verify(productApiClient, never()).restoreInventory(any(), any());
+        verify(inventoryCompensator, never()).compensatePaymentNow(any());
         verifyNoInteractions(notificationService);
     }
 
@@ -193,7 +225,7 @@ class OrderServiceTest {
                 .hasMessageContaining("order.outOfStock");
 
         verifyNoInteractions(orderPaymentFinalizer);
-        verify(productApiClient, never()).restoreInventory(any(), any());
+        verify(inventoryCompensator, never()).compensatePaymentNow(any());
         verifyNoInteractions(notificationService);
     }
 
@@ -246,6 +278,8 @@ class OrderServiceTest {
         assertThat(order.getStatus()).isEqualTo(OrderStatus.REFUNDED);
         assertThat(response.status()).isEqualTo("COMPLETED");
         verify(refundRepository).save(any());
+        // 재고 복원 예약이 같은 트랜잭션에 실린다(#34).
+        verify(inventoryCompensationStore).recordRefund(1L);
     }
 
     @Test

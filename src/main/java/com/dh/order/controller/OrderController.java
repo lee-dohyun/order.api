@@ -28,7 +28,7 @@ import com.dh.order.dto.OrderDtos.RefundResponse;
 import com.dh.order.dto.OrderDtos.Requester;
 import com.dh.order.dto.OrderDtos.ShipmentResponse;
 import com.dh.order.service.OrderService;
-import com.dh.order.config.ProductApiClient;
+import com.dh.order.service.InventoryCompensator;
 import com.nimbusds.jwt.JWTClaimsSet;
 
 import jakarta.validation.Valid;
@@ -48,14 +48,14 @@ public class OrderController {
     private final OrderService orderService;
     private final AdminJwtVerifier adminJwtVerifier;
     private final CustomerJwtVerifier customerJwtVerifier;
-    private final ProductApiClient productApiClient;
+    private final InventoryCompensator inventoryCompensator;
 
     public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier, 
-                           CustomerJwtVerifier customerJwtVerifier, ProductApiClient productApiClient) {
+                           CustomerJwtVerifier customerJwtVerifier, InventoryCompensator inventoryCompensator) {
         this.orderService = orderService;
         this.adminJwtVerifier = adminJwtVerifier;
         this.customerJwtVerifier = customerJwtVerifier;
-        this.productApiClient = productApiClient;
+        this.inventoryCompensator = inventoryCompensator;
     }
 
     @PostMapping
@@ -151,18 +151,11 @@ public class OrderController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
-        // 1. 환불할 주문의 상품 목록(아이템) 조회
-        OrderResponse orderResponse = orderService.getOrder(id, Requester.of(null, null, null, true));
-
-        // 2. 내부 트랜잭션으로 환불 상태 변경
+        // 1. 환불 상태 변경 + 재고 복원 예약(같은 트랜잭션)
         RefundResponse response = orderService.refundOrder(id, request);
 
-        // 3. 재고 복원 원격 호출 (트랜잭션 밖에서 실행하여 롤백 방지)
-        try {
-            productApiClient.restoreInventory(id, orderResponse.items());
-        } catch (Exception e) {
-            logger.error("환불은 성공했으나 재고 복원 호출 실패 - 수동 복원 필요. orderId={}", id, e);
-        }
+        // 2. 재고 복원 원격 호출 (트랜잭션 밖). 실패해도 예약 행이 남아 스케줄러가 재시도한다(#34).
+        inventoryCompensator.restoreRefundNow(id);
 
         return ResponseEntity.ok(response);
     }

@@ -53,6 +53,8 @@ public class OrderService {
     private final ProductApiClient productApiClient;
     private final com.dh.order.repository.ChannelRepository channelRepository;
     private final OrderPaymentFinalizer orderPaymentFinalizer;
+    private final InventoryCompensationStore inventoryCompensationStore;
+    private final InventoryCompensator inventoryCompensator;
 
     public OrderService(
             OrderRepository orderRepository,
@@ -62,7 +64,9 @@ public class OrderService {
             OrderNotificationService notificationService,
             ProductApiClient productApiClient,
             com.dh.order.repository.ChannelRepository channelRepository,
-            OrderPaymentFinalizer orderPaymentFinalizer) {
+            OrderPaymentFinalizer orderPaymentFinalizer,
+            InventoryCompensationStore inventoryCompensationStore,
+            InventoryCompensator inventoryCompensator) {
         this.orderRepository = orderRepository;
         this.shipmentRepository = shipmentRepository;
         this.paymentRepository = paymentRepository;
@@ -71,6 +75,8 @@ public class OrderService {
         this.productApiClient = productApiClient;
         this.channelRepository = channelRepository;
         this.orderPaymentFinalizer = orderPaymentFinalizer;
+        this.inventoryCompensationStore = inventoryCompensationStore;
+        this.inventoryCompensator = inventoryCompensator;
     }
 
     /**
@@ -222,12 +228,21 @@ public class OrderService {
      * 트랜잭션으로 원자적으로 처리한다. 그 커밋이 실패하면(동시 결제 경합에서 졌거나
      * 진짜 오류거나) 이미 나간 재고 차감을 되돌린다 - 이게 이 저장소 AGENTS.md가
      * "payOrder에는 보상 로직이 없다"고 명시했던 결함이다.
+     *
+     * <p>차감을 보내기 <b>전에</b> 결제 시도를 {@code inventory_compensations}에 남긴다(#34). 차감과
+     * 로컬 커밋 사이에 파드가 죽으면 예외 경로가 돌지 않아 보상할 주체가 없는데, 이 행이 남아 있으면
+     * {@link InventoryCompensator#sweep}이 방치된 시도로 보고 재고를 되돌린다.
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public OrderResponse payOrder(Long id, Requester requester) {
         Order order = loadAccessibleWithItems(id, requester);
         if (order.getStatus() != OrderStatus.CREATED) {
             throw new OrderStateException("order.alreadyPaid", String.valueOf(id));
+        }
+
+        // 복원이 진행 중인 주문은 받지 않는다 - 지금 차감하면 뒤따라 도착한 복원이 그 차감을 되돌린다.
+        if (!inventoryCompensationStore.beginPayment(order.getId())) {
+            throw new OrderStateException("order.inventoryUnavailable");
         }
 
         // 재고 차감(원격 HTTP) - 트랜잭션 밖에서 호출해 커넥션을 붙잡지 않는다. 멱등성 키는
@@ -241,7 +256,7 @@ public class OrderService {
         try {
             paid = orderPaymentFinalizer.markPaid(order.getId());
         } catch (RuntimeException commitFailure) {
-            handlePaymentCommitFailure(id, order, commitFailure);
+            handlePaymentCommitFailure(id, commitFailure);
             throw commitFailure; // handlePaymentCommitFailure는 항상 예외를 던진다 - 컴파일러용.
         }
 
@@ -263,11 +278,11 @@ public class OrderService {
      *       뻔한 경우다. 방금 나간 차감을 되돌린다(보상 트랜잭션).</li>
      * </ol>
      */
-    private void handlePaymentCommitFailure(Long id, Order order, RuntimeException commitFailure) {
+    private void handlePaymentCommitFailure(Long id, RuntimeException commitFailure) {
         // 재확인 조회 자체가 실패할 수 있다(DB 장애처럼 markPaid를 실패시킨 원인과 같은 원인으로).
         // 이 조회가 죽었다고 보상 복원을 건너뛰면 "동시 경합에서 짐"과 "진짜 실패"를 구분할 수
-        // 없게 되는데, 그 경우 안전한 기본값은 "진짜 실패로 보고 보상한다"쪽이다 - 승자의 정당한
-        // 차감을 잘못 되돌릴 위험보다 재고가 빠진 채 방치될 위험이 더 크다.
+        // 없게 되므로 "진짜 실패"쪽으로 넘긴다. 보상 쪽이 주문 상태를 다시 읽고(InventoryCompensator),
+        // 그때도 못 읽으면 미결 행으로 남겨 나중에 판정하므로 승자의 차감을 잘못 되돌리지 않는다.
         OrderStatus currentStatus = null;
         try {
             currentStatus = orderRepository.findById(id).map(Order::getStatus).orElse(null);
@@ -280,11 +295,8 @@ public class OrderService {
         }
 
         log.error("결제 확정(로컬 커밋) 실패 - 방금 나간 재고 차감을 보상 복원한다 (orderId={})", id, commitFailure);
-        try {
-            productApiClient.restoreInventory(id, toItemResponses(order.getItems()));
-        } catch (Exception restoreFailure) {
-            log.error("보상 복원 호출도 실패 - 수동 복원 필요 (orderId={})", id, restoreFailure);
-        }
+        // 여기서 복원이 실패해도 미결 행이 남아 스케줄러가 성공할 때까지 재시도한다(#34).
+        inventoryCompensator.compensatePaymentNow(id);
         throw new OrderStateException("order.paymentConfirmationFailed", String.valueOf(id));
     }
 
@@ -335,6 +347,9 @@ public class OrderService {
         Refund refund = new Refund(payment, payment.getAmount(), request.reason());
         refundRepository.save(refund);
         order.setStatus(OrderStatus.REFUNDED);
+        // 재고 복원 예약을 REFUNDED 전이와 같은 트랜잭션에 넣는다(#34). 복원 호출은 커밋 뒤에 컨트롤러가
+        // 하는데, 그 호출이 실패하거나 그 전에 죽어도 이 행이 남아 있어 스케줄러가 이어받는다.
+        inventoryCompensationStore.recordRefund(orderId);
         return toRefundResponse(order, refund);
     }
 
@@ -379,7 +394,6 @@ public class OrderService {
         return value == null || value.isBlank();
     }
 
-    /** payOrder 실패 후 보상 복원 호출과 toResponse가 공유하는 아이템 매핑. */
     private List<OrderItemResponse> toItemResponses(List<OrderItem> items) {
         return items.stream()
                 .map(i -> new OrderItemResponse(

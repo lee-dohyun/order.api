@@ -63,7 +63,9 @@ class OrderCreationPricingTest {
                 mock(OrderNotificationService.class),
                 productApiClient,
                 channelRepository,
-                mock(OrderPaymentFinalizer.class));
+                mock(OrderPaymentFinalizer.class),
+                mock(InventoryCompensationStore.class),
+                mock(InventoryCompensator.class));
     }
 
     // ------------------------------------------------------------------ variantId(호환) 경로
