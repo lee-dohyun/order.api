@@ -124,4 +124,18 @@ class PurchaseSummaryIntegrationTest {
 
         assertThat(summarize()).isEmpty();
     }
+
+    @Test
+    @DisplayName("회원 한 명 집계는 전체 집계와 같은 규칙을 쓴다 — DELIVERED·기간 내만, 없으면 0 (gateway#81)")
+    void singleCustomerSummaryFollowsSameRules() {
+        insertOrder("member-a", "DELIVERED", 100_000, LocalDateTime.now().minusDays(1));
+        insertOrder("member-a", "DELIVERED", 50_000, LocalDateTime.now().minusDays(2));
+        insertOrder("member-a", "PAID", 70_000, LocalDateTime.now().minusDays(1));
+        insertOrder("member-a", "REFUNDED", 30_000, LocalDateTime.now().minusDays(1));
+        insertOrder("member-a", "DELIVERED", 900_000, LocalDateTime.now().minusMonths(7));
+        insertOrder("member-b", "DELIVERED", 10_000, LocalDateTime.now().minusDays(1));
+
+        assertThat(orderRepository.sumConfirmedPurchasesOf("member-a", SINCE)).isEqualByComparingTo("150000");
+        assertThat(orderRepository.sumConfirmedPurchasesOf("nobody", SINCE)).isEqualByComparingTo("0");
+    }
 }

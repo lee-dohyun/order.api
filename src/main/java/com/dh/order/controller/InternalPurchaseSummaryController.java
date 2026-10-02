@@ -6,6 +6,7 @@ import java.util.List;
 
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -44,5 +45,17 @@ public class InternalPurchaseSummaryController {
         return orderRepository.sumConfirmedPurchasesSince(since).stream()
                 .map(row -> new PurchaseSummaryResponse(row.getCustomerId(), row.getConfirmedAmount()))
                 .toList();
+    }
+
+    /**
+     * 회원 한 명의 구매확정액. auth.api 가 마이페이지의 "다음 등급까지 남은 금액"을 계산할 때 부른다
+     * (gateway#81). 구매확정이 없으면 0 으로 응답한다 — 전체 집계와 달리 대상이 정해져 있어 "없음"을
+     * 누락으로 표현할 이유가 없다.
+     */
+    @GetMapping("/{customerId}")
+    public PurchaseSummaryResponse summarizeOne(
+            @PathVariable String customerId,
+            @RequestParam("since") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime since) {
+        return new PurchaseSummaryResponse(customerId, orderRepository.sumConfirmedPurchasesOf(customerId, since));
     }
 }
