@@ -64,6 +64,20 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
             """)
     List<PurchaseSummaryRow> sumConfirmedPurchasesSince(@Param("since") LocalDateTime since);
 
+    /**
+     * 회원 한 명의 구매확정 금액 합계. 집계 규칙은 {@link #sumConfirmedPurchasesSince} 와 <b>같아야 한다</b>
+     * — 마이페이지의 "다음 등급까지 남은 금액"이 배치가 실제로 쓰는 금액과 어긋나면 안 된다(gateway#81).
+     * 구매확정이 없으면 0 이다.
+     */
+    @Query("""
+            select coalesce(sum(o.totalPrice), 0)
+            from Order o
+            where o.customerId = :customerId
+              and o.status = com.dh.order.domain.OrderStatus.DELIVERED
+              and o.createdAt >= :since
+            """)
+    BigDecimal sumConfirmedPurchasesOf(@Param("customerId") String customerId, @Param("since") LocalDateTime since);
+
     /** 프로젝션 — 엔티티를 통째로 끌고 오지 않는다(회원 수만큼 커진다). */
     interface PurchaseSummaryRow {
         String getCustomerId();
