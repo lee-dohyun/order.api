@@ -109,6 +109,15 @@ Issue를 조회해 겹치는 작업이 이미 `In Progress`인지 확인하고, 
 
 ### 멱등성
 
+- **주문 생성(`POST /api/orders`)은 `Idempotency-Key` 헤더로 멱등하다**(gateway#306, V10). 같은 키의
+  재시도는 가격 확정(원격 호출)까지 가지 않고 처음 만든 주문을 그대로 돌려받는다(게스트는 게스트 토큰
+  포함 — 첫 응답을 못 받은 게스트의 유일한 접근 수단이다). 순서는 `findByIdempotencyKeyWithItems` 조회 →
+  생성 → 저장에서 유니크 충돌이 나면 재조회이고, **최종 방어는 `uq_orders_idempotency_key` 부분 유니크
+  인덱스**다 — 조회만으로는 동시에 들어온 두 요청이 둘 다 "없음"을 본다(인덱스를 빼면
+  `OrderIdempotencyIntegrationTest` 의 동시성 테스트가 실패한다). 같은 키인데 요청자(`customer_id`)나
+  내용(`idempotency_request_hash`)이 다르면 409 `order.idempotencyKeyReused` 다. 이 두 검사를 풀면 남의
+  주문·게스트 토큰이 새거나, 고객이 장바구니와 다른 주문을 결제한다. 키가 없는 요청은 예전처럼 매번
+  주문을 만든다 — 키를 보내는 것은 클라이언트(product.front 장바구니) 책임이다.
 - `payOrder`의 상태 가드(`CREATED`가 아니면 거부)는 동시성에는 불충분하다(두 요청이 동시에 `CREATED`를
   읽을 수 있다). `markPaid`가 행을 다시 읽어 창을 좁히고, **최종 방어는 `payments.order_id` UNIQUE
   제약**(`V3__payments_and_refunds.sql`)이다. `SELECT ... FOR UPDATE`는 쓰지 않는다.

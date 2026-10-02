@@ -2,15 +2,21 @@ package com.dh.order.service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -92,9 +98,22 @@ public class OrderService {
      * 커넥션을 잡은 채 네트워크를 기다리게 된다. 저장은 아래 {@code orderRepository.save()}가
      * 자체 트랜잭션으로 처리한다. 이 클래스는 클래스 레벨이 {@code readOnly = true}라서
      * 명시적으로 끊어주지 않으면 읽기 전용 트랜잭션에 합류한다(#211에서 겪은 함정).
+     *
+     * <p>{@code idempotencyKey}(null 가능)가 있으면 같은 키의 재시도는 새 주문을 만들지 않고 처음 만든
+     * 주문을 돌려받는다(gateway#306). 순서는 조회 → 생성 → 유니크 인덱스(V10) 충돌 시 재조회다.
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public OrderResponse createOrder(Long channelId, OrderCreateRequest request, Requester requester) {
+    public OrderResponse createOrder(Long channelId, OrderCreateRequest request, Requester requester,
+            String idempotencyKey) {
+        // 같은 키의 재시도면 가격 확정(원격 호출)까지 가지 않고 처음 만든 주문을 돌려준다(gateway#306).
+        String requestHash = idempotencyKey == null ? null : requestHash(channelId, request);
+        if (idempotencyKey != null) {
+            Optional<OrderResponse> replayed = replay(idempotencyKey, requestHash, requester);
+            if (replayed.isPresent()) {
+                return replayed.get();
+            }
+        }
+
         // offerId 로 온 품목은 그 오퍼로, variantId 만 온 품목은 product.api 가 고른 대표 오퍼로 확정한다
         // (order.api#14). 두 경로 모두 가격·상품·판매자를 서버가 채운다 — 클라이언트 값은 쓰지 않는다.
         List<Long> offerIds = request.items().stream()
@@ -153,8 +172,20 @@ public class OrderService {
             total = total.add(offer.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
         }
         applyGradeDiscount(order, total, requester);
+        order.setIdempotencyKey(idempotencyKey);
+        order.setIdempotencyRequestHash(requestHash);
 
-        Order saved = orderRepository.save(order);
+        Order saved;
+        try {
+            saved = orderRepository.save(order);
+        } catch (DataIntegrityViolationException e) {
+            // 같은 키의 요청이 동시에 들어와 둘 다 위의 조회에서 "없음"을 본 경우다. 유니크 인덱스(V10)에
+            // 진 쪽이 여기로 오고, 이긴 쪽이 만든 주문을 돌려받는다. 키와 무관한 제약 위반은 그대로 던진다.
+            if (idempotencyKey == null) {
+                throw e;
+            }
+            return replay(idempotencyKey, requestHash, requester).orElseThrow(() -> e);
+        }
         // 게스트 토큰은 생성 응답에서만 내려준다 - 이후 조회 응답에는 실리지 않는다.
         return toResponse(saved, saved.getGuestToken());
     }
@@ -430,6 +461,41 @@ public class OrderService {
                         i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity(),
                         i.getSellerId(), i.getSellerName(), i.getOfferId()))
                 .toList();
+    }
+
+    /**
+     * 멱등 키로 이미 만들어진 주문이 있으면 처음 응답과 같은 내용을 돌려준다.
+     *
+     * <p>게스트 토큰도 다시 싣는다 — 첫 응답을 못 받은 게스트(게이트웨이 타임아웃)는 이 토큰 없이는 결제도
+     * 조회도 못 한다. 키는 클라이언트가 만든 UUID 라 토큰과 같은 수준의 비밀이고, 아래 두 검사를 통과한
+     * 요청에만 내려간다.
+     *
+     * @throws OrderStateException 같은 키인데 요청자나 주문 내용이 다르면. 예전 주문을 새 주문인 것처럼
+     *                             돌려주면 고객이 장바구니와 다른 주문을 결제하게 되고, 요청자가 다른데
+     *                             돌려주면 남의 주문이 새어 나간다.
+     */
+    private Optional<OrderResponse> replay(String idempotencyKey, String requestHash, Requester requester) {
+        return orderRepository.findByIdempotencyKeyWithItems(idempotencyKey).map(existing -> {
+            boolean sameRequester = Objects.equals(existing.getCustomerId(), requester.userId());
+            if (!sameRequester || !Objects.equals(existing.getIdempotencyRequestHash(), requestHash)) {
+                throw new OrderStateException("order.idempotencyKeyReused");
+            }
+            return toResponse(existing, existing.getGuestToken());
+        });
+    }
+
+    /**
+     * 요청 내용의 지문. record 의 toString 은 모든 구성 요소를 선언 순서대로 담으므로 같은 본문이면 같은
+     * 문자열이다. 클라이언트가 재시도에서 본문을 바꾸지 않았는지만 보면 되므로 정규화는 하지 않는다.
+     */
+    private static String requestHash(Long channelId, OrderCreateRequest request) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((channelId + "|" + request).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private OrderResponse toResponse(Order order, String guestToken) {
