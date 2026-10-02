@@ -48,22 +48,26 @@ one that gets missed:
 - Remote call **succeeds**, then something after it fails → local state rolls back while the remote stays
   mutated. This needs an explicit compensating action or an outbox, not a comment.
 
-**Known open defect — do not treat as fixed.** `payOrder` is `@Transactional` and calls
-`productApiClient.deductInventory(...)` *inside* it, then sets `PAID`, saves a `Payment`, and calls
-`notificationService.notifyPaid(...)`. If anything after the deduction fails — the `Payment` insert, the
-commit itself — stock stays deducted for an order that is not `PAID`, and nothing compensates. Any change
-to `payOrder` must either address this or state explicitly that it does not. The mail send is also inside
-the transaction: `OrderNotificationService.notifyPaid` swallows `MailException` so it cannot fail the
-payment, but it still holds the DB transaction open for the duration of the SMTP call. Non-rollbackable
-side effects belong after commit.
+**How this repo handles it (order.api#34).** `payOrder` is `NOT_SUPPORTED` and runs
+`InventoryCompensationStore.beginPayment` → `productApiClient.deductInventory` →
+`OrderPaymentFinalizer.markPaid` → `notificationService.notifyPaid`, in that order. `beginPayment` leaves a
+`WATCHING` row in `inventory_compensations` (V8) **before** the remote deduction; `markPaid` closes it to
+`DONE` in the same transaction as the `PAID` transition. If the commit fails, `InventoryCompensator`
+restores stock immediately; if the pod dies in between, its `@Scheduled sweep()` finds the abandoned
+`WATCHING` row and restores. Check on any change here:
 
-**Refund is the mirror image, and it is *not* missing — it is fragile.** Inventory restoration happens in
-`OrderController.refund`, deliberately outside the service transaction: it reads the items, calls
-`orderService.refundOrder(...)` (which transitions to `REFUNDED` and saves a `Refund`), then calls
-`productApiClient.restoreInventory(...)` in a `try/catch` whose only action is
-`logger.error("환불은 성공했으나 재고 복원 호출 실패 - 수동 복원 필요")`. So a restore failure is a
-committed refund with stock never returned and no retry — recoverable only by someone reading the log.
-Flag this whenever refund logic is touched; the fix shape is a retry/outbox, not a wider transaction.
+- The order `beginPayment` → deduct → `markPaid` is kept. Recording after the deduction reopens the crash
+  window.
+- A `RESTORING` order still refuses payment (`beginPayment` returns false) and `markPaid` still refuses to
+  commit when the row is not `WATCHING`. Loosening either gives "stock restored, order PAID".
+- State transitions stay single conditional `UPDATE`s. A read-then-write split lets the request path and
+  the sweeper (or two pods) claim the same row.
+- No remote call is moved inside a `@Transactional` method.
+
+**Refund** follows the same shape: `refundOrder` writes a `RESTORING` row in the same transaction as the
+`REFUNDED` transition, and `OrderController.refund` calls `inventoryCompensator.restoreRefundNow` after
+commit. A failed restore stays in the table and is retried with backoff — it must never go back to a
+bare `try/catch` + log.
 
 ### 3. Idempotency (canon §3)
 

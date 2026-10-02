@@ -62,11 +62,16 @@ class OrderPaymentFinalizerIntegrationTest {
     private ChannelRepository channelRepository;
     @Autowired
     private OrderPaymentFinalizer orderPaymentFinalizer;
+    @Autowired
+    private InventoryCompensationStore inventoryCompensationStore;
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     private Channel channel;
 
     @BeforeEach
     void setUp() {
+        jdbc.update("DELETE FROM inventory_compensations");
         paymentRepository.deleteAll();
         orderRepository.deleteAll();
         channel = channelRepository.findById(1L).orElseThrow();
@@ -112,6 +117,8 @@ class OrderPaymentFinalizerIntegrationTest {
     void markPaid_ShouldApplyExactlyOnce_WhenCalledConcurrentlyForSameOrder() throws InterruptedException {
         Order saved = newOrderWithItems(1);
         Long orderId = saved.getId();
+        // payOrder 가 차감 전에 남기는 결제 시도 행 - markPaid 는 이 행이 열려 있어야 확정한다(#34).
+        assertThat(inventoryCompensationStore.beginPayment(orderId)).isTrue();
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
