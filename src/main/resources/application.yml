@@ -80,3 +80,5 @@ resilience4j:
     instances:
       productApi:
         baseConfig: default
+      authApi:
+        baseConfig: default

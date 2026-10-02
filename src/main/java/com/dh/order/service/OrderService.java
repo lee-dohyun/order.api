@@ -1,6 +1,7 @@
 package com.dh.order.service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.dh.order.config.AuthApiClient;
 import com.dh.order.config.ProductApiClient;
 import com.dh.order.config.ProductApiClient.ResolvedOffer;
 import com.dh.order.domain.Order;
@@ -55,6 +57,7 @@ public class OrderService {
     private final OrderPaymentFinalizer orderPaymentFinalizer;
     private final InventoryCompensationStore inventoryCompensationStore;
     private final InventoryCompensator inventoryCompensator;
+    private final AuthApiClient authApiClient;
 
     public OrderService(
             OrderRepository orderRepository,
@@ -66,7 +69,8 @@ public class OrderService {
             com.dh.order.repository.ChannelRepository channelRepository,
             OrderPaymentFinalizer orderPaymentFinalizer,
             InventoryCompensationStore inventoryCompensationStore,
-            InventoryCompensator inventoryCompensator) {
+            InventoryCompensator inventoryCompensator,
+            AuthApiClient authApiClient) {
         this.orderRepository = orderRepository;
         this.shipmentRepository = shipmentRepository;
         this.paymentRepository = paymentRepository;
@@ -77,6 +81,7 @@ public class OrderService {
         this.orderPaymentFinalizer = orderPaymentFinalizer;
         this.inventoryCompensationStore = inventoryCompensationStore;
         this.inventoryCompensator = inventoryCompensator;
+        this.authApiClient = authApiClient;
     }
 
     /**
@@ -147,11 +152,36 @@ public class OrderService {
             order.addItem(item);
             total = total.add(offer.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
         }
-        order.setTotalPrice(total);
+        applyGradeDiscount(order, total, requester);
 
         Order saved = orderRepository.save(order);
         // 게스트 토큰은 생성 응답에서만 내려준다 - 이후 조회 응답에는 실리지 않는다.
         return toResponse(saved, saved.getGuestToken());
+    }
+
+    /**
+     * 결제 금액을 "상품 합계 - 회원 등급 할인"으로 확정하고 그 근거를 주문에 스냅샷으로 남긴다(gateway#82).
+     *
+     * <p>할인율은 요청 본문이 아니라 auth.api 에서만 온다 — 가격을 product.api 에서 확정받는 것과 같은
+     * 이유다. 로그인하지 않은 게스트는 등급이 없으므로 조회하지 않는다. 레거시 이메일 폴백도 쓰지
+     * 않는다: 등급은 금전적 혜택이라 "아마 이 사람일 것"으로 줄 수 없다.
+     *
+     * <p>할인액은 원 미만을 <b>버린다</b>. 저장 통화가 KRW 단일이라 소수 금액이 없고, 반올림하면
+     * 약속한 할인율보다 더 깎는 경우가 생긴다.
+     */
+    private void applyGradeDiscount(Order order, BigDecimal subtotal, Requester requester) {
+        BigDecimal discount = BigDecimal.ZERO;
+        if (requester.userId() != null) {
+            AuthApiClient.MemberGrade grade = authApiClient.findMemberGrade(requester.userId()).orElse(null);
+            if (grade != null && grade.discountRate() != null && grade.discountRate().signum() > 0) {
+                discount = subtotal.multiply(grade.discountRate())
+                        .divide(BigDecimal.valueOf(100), 0, RoundingMode.DOWN);
+                order.setGradeCode(grade.code());
+                order.setGradeDiscountRate(grade.discountRate());
+            }
+        }
+        order.setDiscountAmount(discount);
+        order.setTotalPrice(subtotal.subtract(discount));
     }
 
     /**
@@ -417,6 +447,10 @@ public class OrderService {
                 order.getAddress2(),
                 order.getStatus().name(),
                 order.getTotalPrice(),
+                order.getTotalPrice().add(order.getDiscountAmount()),
+                order.getDiscountAmount(),
+                order.getGradeCode(),
+                order.getGradeDiscountRate(),
                 items,
                 order.getCreatedAt(),
                 order.getPaidAt(),
