@@ -5,15 +5,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.dh.order.config.AuthApiClient;
 import com.dh.order.config.ProductApiClient;
 import com.dh.order.config.ProductApiClient.ResolvedOffer;
 import com.dh.order.domain.Order;
@@ -39,7 +42,10 @@ class OrderCreationPricingTest {
     private static final Long SKU = 42L;
     private static final Long 대표_오퍼 = 501L;
 
+    private static final String 회원_SUB = "2f1c7a3e-0000-4000-8000-000000000001";
+
     private ProductApiClient productApiClient;
+    private AuthApiClient authApiClient;
     private OrderRepository orderRepository;
     private com.dh.order.repository.ChannelRepository channelRepository;
     private OrderService orderService;
@@ -47,6 +53,7 @@ class OrderCreationPricingTest {
     @BeforeEach
     void setUp() {
         productApiClient = mock(ProductApiClient.class);
+        authApiClient = mock(AuthApiClient.class);
         orderRepository = mock(OrderRepository.class);
         channelRepository = mock(com.dh.order.repository.ChannelRepository.class);
         when(orderRepository.save(any(Order.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -65,7 +72,8 @@ class OrderCreationPricingTest {
                 channelRepository,
                 mock(OrderPaymentFinalizer.class),
                 mock(InventoryCompensationStore.class),
-                mock(InventoryCompensator.class));
+                mock(InventoryCompensator.class),
+                authApiClient);
     }
 
     // ------------------------------------------------------------------ variantId(호환) 경로
@@ -221,6 +229,83 @@ class OrderCreationPricingTest {
         assertThat(response.items()).extracting(i -> i.offerId()).containsExactly(601L, 602L);
     }
 
+    // ------------------------------------------------------------------ 등급 할인 (gateway#82)
+
+    @Test
+    void 회원_등급_할인율만큼_결제_금액이_줄고_근거가_주문에_남는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        등급을_돌려주도록("GOLD", "5.00");
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 회원());
+
+        assertThat(response.subtotalPrice()).isEqualByComparingTo("518000");
+        assertThat(response.discountAmount()).isEqualByComparingTo("25900");
+        assertThat(response.totalPrice()).isEqualByComparingTo("492100");
+        assertThat(response.gradeCode()).isEqualTo("GOLD");
+        assertThat(response.gradeDiscountRate()).isEqualByComparingTo("5.00");
+        assertThat(response.items()).singleElement()
+                .satisfies(item -> assertThat(item.price()).as("품목 단가는 할인 전 가격 그대로")
+                        .isEqualByComparingTo(카탈로그_가격));
+    }
+
+    @Test
+    void 할인액은_원_미만을_버린다() {
+        대표오퍼를_돌려주도록(SKU, new BigDecimal("990"), true);
+        등급을_돌려주도록("SILVER", "2.00");
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원());
+
+        // 990 × 2% = 19.8 → 19. 반올림(20)하면 약속한 할인율보다 더 깎는다.
+        assertThat(response.discountAmount()).isEqualByComparingTo("19");
+        assertThat(response.totalPrice()).isEqualByComparingTo("971");
+    }
+
+    @Test
+    void 게스트_주문은_등급을_조회하지_않고_할인도_없다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트());
+
+        verifyNoInteractions(authApiClient);
+        assertThat(response.discountAmount()).isEqualByComparingTo("0");
+        assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
+        assertThat(response.gradeCode()).isNull();
+    }
+
+    @Test
+    void 이메일만_있는_요청자는_등급_할인을_받지_않는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+
+        OrderResponse response = orderService.createOrder(
+                1L, 주문요청(SKU, 1), new Requester(null, "someone@example.com", null, false));
+
+        verifyNoInteractions(authApiClient);
+        assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
+    }
+
+    @Test
+    void 등급을_확인하지_못하면_할인_없이_주문은_만들어진다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        when(authApiClient.findMemberGrade(회원_SUB)).thenReturn(Optional.empty());
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원());
+
+        assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
+        assertThat(response.discountAmount()).isEqualByComparingTo("0");
+        assertThat(response.gradeCode()).isNull();
+    }
+
+    @Test
+    void 할인율이_0인_등급은_등급_근거를_남기지_않는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        등급을_돌려주도록("GENERAL", "0.00");
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원());
+
+        assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
+        assertThat(response.gradeCode()).as("grade_code 는 할인이 적용된 주문에만 채운다").isNull();
+    }
+
     // ------------------------------------------------------------------ 요청 규칙
 
     @Test
@@ -264,6 +349,15 @@ class OrderCreationPricingTest {
                 "홍길동", "010-1234-5678", "서울시 어딘가",
                 null, null, null, null, null,
                 List.of(new OrderItemRequest(offerId, null, quantity)));
+    }
+
+    private void 등급을_돌려주도록(String code, String discountRate) {
+        when(authApiClient.findMemberGrade(회원_SUB)).thenReturn(
+                Optional.of(new AuthApiClient.MemberGrade(code, code, new BigDecimal(discountRate))));
+    }
+
+    private Requester 회원() {
+        return new Requester(회원_SUB, "member@example.com", null, false);
     }
 
     private Requester 게스트() {

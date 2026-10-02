@@ -84,8 +84,23 @@ public class Order {
     @Column(length = 200)
     private String address2;
 
+    /** 결제 금액. 등급 할인({@link #discountAmount})이 이미 빠진 값이다. */
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal totalPrice;
+
+    /**
+     * 회원 등급 할인액과 그 근거 스냅샷(gateway#82). 등급은 매월 재산정되고 할인율은 정책 테이블이라
+     * 바뀌므로, 주문 시점 값을 남겨 두지 않으면 이 주문이 왜 이 금액이었는지 복원할 수 없다.
+     * 게스트 주문과 등급 조회에 실패한 주문은 할인 0, 등급 null 이다.
+     */
+    @Column(name = "discount_amount", nullable = false, precision = 12, scale = 2)
+    private BigDecimal discountAmount = BigDecimal.ZERO;
+
+    @Column(name = "grade_code", length = 20)
+    private String gradeCode;
+
+    @Column(name = "grade_discount_rate", precision = 5, scale = 2)
+    private BigDecimal gradeDiscountRate;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
