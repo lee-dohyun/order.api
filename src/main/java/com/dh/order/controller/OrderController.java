@@ -1,6 +1,7 @@
 package com.dh.order.controller;
 
 import java.util.List;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.dh.order.config.AdminJwtVerifier;
 import com.dh.order.config.AdminPrincipal;
@@ -42,6 +44,12 @@ public class OrderController {
     /** 게스트 주문 접근 토큰. 주문 생성 응답으로 받은 값을 클라이언트가 되돌려 보낸다. */
     private static final String GUEST_TOKEN_HEADER = "X-Order-Guest-Token";
 
+    /** 주문 생성 멱등 키. 클라이언트가 주문 시도마다 만든 값(UUID)을 싣는다. */
+    private static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
+    /** orders.idempotency_key 가 VARCHAR(64)다. 너무 짧은 키는 다른 시도와 겹칠 수 있어 받지 않는다. */
+    private static final Pattern IDEMPOTENCY_KEY_FORMAT = Pattern.compile("[A-Za-z0-9_-]{16,64}");
+
     /** admin.front lib/menu.ts 의 "주문 관리" requiredRoles 와 같은 값이어야 한다. */
     private static final String ORDER_MANAGER = "ORDER_MANAGER";
 
@@ -58,13 +66,24 @@ public class OrderController {
         this.inventoryCompensator = inventoryCompensator;
     }
 
+    /**
+     * 주문 생성. {@code Idempotency-Key} 를 보내면 같은 키의 재시도는 새 주문을 만들지 않고 처음 만든
+     * 주문을 그대로(201) 돌려받는다 — 응답을 못 받은 클라이언트가 안심하고 다시 보낼 수 있게 한다(gateway#306).
+     * 키가 없으면 요청마다 주문을 만든다.
+     */
     @PostMapping
     public ResponseEntity<OrderResponse> create(
             @RequestHeader(value = "X-Channel", defaultValue = "1") Long channelId,
             @Valid @RequestBody OrderCreateRequest request,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
+        if (idempotencyKey != null && !IDEMPOTENCY_KEY_FORMAT.matcher(idempotencyKey).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    IDEMPOTENCY_KEY_HEADER + " 는 영문·숫자·'-'·'_' 16~64자여야 한다");
+        }
         Requester requester = extractRequester(authHeader, null);
-        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(channelId, request, requester));
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(orderService.createOrder(channelId, request, requester, idempotencyKey));
     }
 
     // 로그인한 사용자 본인의 주문 목록.

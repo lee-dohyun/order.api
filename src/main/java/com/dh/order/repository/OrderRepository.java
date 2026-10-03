@@ -28,6 +28,13 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     Optional<Order> findByIdWithItems(@Param("id") Long id);
 
     /**
+     * 멱등 키로 이미 만들어진 주문을 찾는다(gateway#306). createOrder 는 트랜잭션 밖(NOT_SUPPORTED)에서
+     * 응답을 조립하므로 {@link #findByIdWithItems} 와 같은 이유로 items 를 미리 초기화한다.
+     */
+    @Query("select distinct o from Order o left join fetch o.items where o.idempotencyKey = :key")
+    Optional<Order> findByIdempotencyKeyWithItems(@Param("key") String key);
+
+    /**
      * 내 주문 목록. customer_id(Keycloak sub)가 정답이고, 아직 백필되지 않은 레거시 행
      * (customer_id가 null인 회원 주문)만 이메일로 폴백한다. 게스트 주문은 두 값이 모두
      * null이라 어느 쪽 조건도 타지 않는다 — null == null로 남의 주문이 딸려오면 안 되므로

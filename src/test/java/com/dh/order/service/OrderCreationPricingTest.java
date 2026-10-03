@@ -82,7 +82,7 @@ class OrderCreationPricingTest {
     void 주문_금액은_카탈로그_가격으로_계산된다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 게스트(), null);
 
         assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격.multiply(BigDecimal.valueOf(2)));
         assertThat(response.items()).singleElement()
@@ -93,7 +93,7 @@ class OrderCreationPricingTest {
     void 상품명과_productId도_카탈로그_값을_쓴다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null);
 
         assertThat(response.items()).singleElement().satisfies(item -> {
             assertThat(item.productId()).isEqualTo(7L);
@@ -105,7 +105,7 @@ class OrderCreationPricingTest {
     void 카탈로그에_없는_variant는_주문이_거부된다() {
         when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of());
 
-        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(999L, 1), 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(999L, 1), 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.itemUnavailable");
     }
@@ -114,7 +114,7 @@ class OrderCreationPricingTest {
     void 판매중지된_variant는_주문이_거부된다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, false);
 
-        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(SKU, 1), 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.itemUnavailable");
     }
@@ -135,7 +135,7 @@ class OrderCreationPricingTest {
                 "홍길동", "010-1234-5678", "서울시 어딘가", null, null, null, null, null,
                 List.of(new OrderItemRequest(null, 41L, 1), new OrderItemRequest(null, 42L, 2)));
 
-        assertThatThrownBy(() -> orderService.createOrder(1L, 합계3, 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 합계3, 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.purchaseLimitExceeded");
     }
@@ -145,7 +145,7 @@ class OrderCreationPricingTest {
         when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
                 SKU, 오퍼(대표_오퍼, SKU, 카탈로그_가격, true, 1L, "포스셀렉트", 2)));
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 게스트(), null);
 
         assertThat(response.items()).singleElement().satisfies(item -> assertThat(item.quantity()).isEqualTo(2));
     }
@@ -155,7 +155,7 @@ class OrderCreationPricingTest {
         when(productApiClient.resolveOffers(anyList())).thenReturn(Map.of(
                 601L, 오퍼(601L, 43L, 카탈로그_가격, true, 7L, "테스트 공급사", 2)));
 
-        assertThatThrownBy(() -> orderService.createOrder(1L, 오퍼주문요청(601L, 3), 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 오퍼주문요청(601L, 3), 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.purchaseLimitExceeded");
     }
@@ -164,7 +164,7 @@ class OrderCreationPricingTest {
     void variantId로_온_품목도_product_api가_고른_대표_오퍼를_기록한다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null);
 
         assertThat(response.items()).singleElement().satisfies(item -> {
             assertThat(item.offerId()).isEqualTo(대표_오퍼);
@@ -179,7 +179,7 @@ class OrderCreationPricingTest {
         when(productApiClient.resolveOffers(anyList())).thenReturn(Map.of(
                 601L, 오퍼(601L, 43L, new BigDecimal("199000"), true, 7L, "테스트 공급사")));
 
-        OrderResponse response = orderService.createOrder(1L, 오퍼주문요청(601L, 2), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 오퍼주문요청(601L, 2), 게스트(), null);
 
         assertThat(response.totalPrice()).isEqualByComparingTo(new BigDecimal("398000"));
         assertThat(response.items()).singleElement().satisfies(item -> {
@@ -194,7 +194,7 @@ class OrderCreationPricingTest {
         when(productApiClient.resolveOffers(anyList())).thenReturn(Map.of(
                 601L, 오퍼(601L, 43L, new BigDecimal("199000"), true, 7L, "테스트 공급사")));
 
-        OrderResponse response = orderService.createOrder(1L, 오퍼주문요청(601L, 1), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 오퍼주문요청(601L, 1), 게스트(), null);
 
         assertThat(response.items()).singleElement().satisfies(item -> {
             assertThat(item.sellerId()).isEqualTo(7L);
@@ -206,7 +206,7 @@ class OrderCreationPricingTest {
     void 없는_offerId는_주문이_거부된다() {
         when(productApiClient.resolveOffers(anyList())).thenReturn(Map.of());
 
-        assertThatThrownBy(() -> orderService.createOrder(1L, 오퍼주문요청(9999L, 1), 게스트()))
+        assertThatThrownBy(() -> orderService.createOrder(1L, 오퍼주문요청(9999L, 1), 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
                 .hasMessage("order.itemUnavailable");
     }
@@ -223,7 +223,7 @@ class OrderCreationPricingTest {
                 null, null, null, null, null,
                 List.of(new OrderItemRequest(601L, null, 2), new OrderItemRequest(null, 22L, 3)));
 
-        OrderResponse response = orderService.createOrder(1L, request, 게스트());
+        OrderResponse response = orderService.createOrder(1L, request, 게스트(), null);
 
         assertThat(response.totalPrice()).isEqualByComparingTo(new BigDecimal("8000"));
         assertThat(response.items()).extracting(i -> i.offerId()).containsExactly(601L, 602L);
@@ -236,7 +236,7 @@ class OrderCreationPricingTest {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
         등급을_돌려주도록("GOLD", "5.00");
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 회원());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 회원(), null);
 
         assertThat(response.subtotalPrice()).isEqualByComparingTo("518000");
         assertThat(response.discountAmount()).isEqualByComparingTo("25900");
@@ -253,7 +253,7 @@ class OrderCreationPricingTest {
         대표오퍼를_돌려주도록(SKU, new BigDecimal("990"), true);
         등급을_돌려주도록("SILVER", "2.00");
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원(), null);
 
         // 990 × 2% = 19.8 → 19. 반올림(20)하면 약속한 할인율보다 더 깎는다.
         assertThat(response.discountAmount()).isEqualByComparingTo("19");
@@ -264,7 +264,7 @@ class OrderCreationPricingTest {
     void 게스트_주문은_등급을_조회하지_않고_할인도_없다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null);
 
         verifyNoInteractions(authApiClient);
         assertThat(response.discountAmount()).isEqualByComparingTo("0");
@@ -277,7 +277,7 @@ class OrderCreationPricingTest {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
 
         OrderResponse response = orderService.createOrder(
-                1L, 주문요청(SKU, 1), new Requester(null, "someone@example.com", null, false));
+                1L, 주문요청(SKU, 1), new Requester(null, "someone@example.com", null, false), null);
 
         verifyNoInteractions(authApiClient);
         assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
@@ -288,7 +288,7 @@ class OrderCreationPricingTest {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
         when(authApiClient.findMemberGrade(회원_SUB)).thenReturn(Optional.empty());
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원(), null);
 
         assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
         assertThat(response.discountAmount()).isEqualByComparingTo("0");
@@ -300,7 +300,7 @@ class OrderCreationPricingTest {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
         등급을_돌려주도록("GENERAL", "0.00");
 
-        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원());
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 1), 회원(), null);
 
         assertThat(response.totalPrice()).isEqualByComparingTo(카탈로그_가격);
         assertThat(response.gradeCode()).as("grade_code 는 할인이 적용된 주문에만 채운다").isNull();

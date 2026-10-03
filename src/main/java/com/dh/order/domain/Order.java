@@ -58,6 +58,17 @@ public class Order {
     @Column(name = "guest_token", length = 36)
     private String guestToken;
 
+    /**
+     * 주문 생성 멱등 키(gateway#306). 클라이언트가 주문 시도마다 만들어 {@code Idempotency-Key} 헤더로
+     * 보낸다. 같은 키의 재시도는 새 주문을 만들지 않고 이 주문을 돌려받는다 — 유니크 인덱스(V10)가 최종 방어.
+     */
+    @Column(name = "idempotency_key", length = 64, updatable = false)
+    private String idempotencyKey;
+
+    /** 그 키로 처음 받은 요청 내용의 SHA-256(hex). 같은 키에 다른 내용이 오면 거부한다. */
+    @Column(name = "idempotency_request_hash", length = 64, updatable = false)
+    private String idempotencyRequestHash;
+
     @Column(nullable = false, length = 100)
     private String ordererName;
 
