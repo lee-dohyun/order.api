@@ -19,6 +19,7 @@ import org.springframework.stereotype.Component;
 
 import com.dh.order.domain.OrderItem;
 import com.dh.order.service.OrderStateException;
+import com.dh.order.service.OutOfStockException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -130,7 +131,10 @@ public class ProductApiClient {
             Integer maxPurchaseQuantity) {
     }
 
-    /** @throws OrderStateException 재고 부족이거나 product.api 호출에 실패하면 (ApiExceptionHandler가 409로 응답) */
+    /**
+     * @throws OutOfStockException product.api 가 재고 부족(409)으로 거절하면
+     * @throws OrderStateException 그 밖의 오류 응답이거나 호출에 실패하면 (둘 다 ApiExceptionHandler가 409로 응답)
+     */
     @CircuitBreaker(name = "productApi", fallbackMethod = "deductInventoryFallback")
     public void deductInventory(Long orderId, List<OrderItem> items) {
         List<Map<String, Object>> itemPayload = items.stream()
@@ -146,10 +150,15 @@ public class ProductApiClient {
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            // product.api의 원문 응답은 고객에게 보여줄 것이 아니므로 로그로만 남긴다.
+            if (response.statusCode() == 409) {
+                // 재고 부족은 product.api 가 정상적으로 내린 거절이다 - 장애와 섞지 않는다(order.api#45).
+                log.info("재고 부족으로 차감 거절 (orderId={}, body={})", orderId, response.body());
+                throw new OutOfStockException();
+            }
             if (response.statusCode() >= 400) {
-                // product.api의 원문 응답은 고객에게 보여줄 것이 아니므로 로그로만 남긴다.
                 log.warn("재고 차감 실패 (orderId={}, status={}, body={})", orderId, response.statusCode(), response.body());
-                throw new OrderStateException("order.outOfStock");
+                throw new OrderStateException("order.inventoryUnavailable");
             }
         } catch (IOException e) {
             // OrderStateException은 메시지 키만 들고 다녀서 cause를 못 싣는다 — 원인은 여기서 로그로 남긴다.
@@ -163,6 +172,11 @@ public class ProductApiClient {
     }
 
     public void deductInventoryFallback(Long orderId, List<OrderItem> items, Throwable t) {
+        // 폴백은 메서드가 던진 모든 예외를 받는다. 재고 부족까지 "호출 불가"로 바꾸면 고객은 품절 상품에
+        // "잠시 후 다시 시도"를 안내받는다 - 그대로 내보낸다.
+        if (t instanceof OutOfStockException outOfStock) {
+            throw outOfStock;
+        }
         log.warn("서킷브레이커/폴백 동작 - 재고 서비스 호출 불가 (orderId={})", orderId, t);
         throw new OrderStateException("order.inventoryUnavailable");
     }

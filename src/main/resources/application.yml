@@ -80,5 +80,9 @@ resilience4j:
     instances:
       productApi:
         baseConfig: default
+        # 재고 부족은 product.api 의 정상 판정이라 실패로 세지 않는다(order.api#45). 세면 품절 상품 결제
+        # 시도 몇 번이 회로를 열어 정상 주문 생성·결제까지 막는다.
+        ignoreExceptions:
+          - com.dh.order.service.OutOfStockException
       authApi:
         baseConfig: default
