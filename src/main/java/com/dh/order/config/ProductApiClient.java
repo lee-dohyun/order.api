@@ -128,7 +128,12 @@ public class ProductApiClient {
             boolean freeShipping,
             Short leadTimeDays,
             boolean active,
-            Integer maxPurchaseQuantity) {
+            Integer maxPurchaseQuantity,
+            /**
+             * variant 의 현재 재고(order.api#47). 주문 생성 때 미리 거르는 용도의 조회값이고 예약이 아니다.
+             * 이 필드를 싣지 않는 product.api 와도 동작해야 하므로 null 이면 "모름"으로 보고 검사를 건너뛴다.
+             */
+            Integer stockQuantity) {
     }
 
     /**

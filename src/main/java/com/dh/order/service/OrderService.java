@@ -7,6 +7,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -145,6 +146,7 @@ public class OrderService {
         order.setAddress2(request.address2());
 
         checkPurchaseLimits(request.items(), byOfferId, byVariantId);
+        checkStock(request.items(), byOfferId, byVariantId);
 
         BigDecimal total = BigDecimal.ZERO;
         for (OrderItemRequest itemRequest : request.items()) {
@@ -251,6 +253,42 @@ public class OrderService {
         maxByProduct.forEach((productId, max) -> {
             if (quantityByProduct.getOrDefault(productId, 0) > max) {
                 throw new OrderStateException("order.purchaseLimitExceeded", max);
+            }
+        });
+    }
+
+    /**
+     * 재고보다 많은 수량은 주문을 만들 때 거른다(order.api#47). 전에는 결제할 수 없는 주문이 CREATED 로
+     * 만들어지고 결제 단계에서야 막혔다.
+     *
+     * <p><b>조회일 뿐 예약이 아니다.</b> 여기를 통과한 뒤 결제 전에 다른 주문이 재고를 가져갈 수 있고,
+     * 그 경우는 지금처럼 결제 때의 차감이 {@link OutOfStockException} 으로 막는다. 재고를 줄이는 곳은
+     * 여전히 결제 한 군데다.
+     *
+     * <p>재고는 variant 단위라, 같은 SKU 를 여러 줄(오퍼가 달라도)로 나눠 담으면 합계로 본다.
+     * 판매하지 않는 오퍼는 건너뛴다 - 그쪽은 뒤의 루프가 {@code order.itemUnavailable} 로 안내한다.
+     * 재고를 싣지 않은 응답(null)은 "모름"이므로 막지 않는다.
+     */
+    private static void checkStock(List<OrderItemRequest> items, Map<Long, ResolvedOffer> byOfferId,
+            Map<Long, ResolvedOffer> byVariantId) {
+        Map<Long, Integer> quantityByVariant = new LinkedHashMap<>();
+        Map<Long, ResolvedOffer> offerByVariant = new HashMap<>();
+        for (OrderItemRequest item : items) {
+            ResolvedOffer offer = offerFor(item, byOfferId, byVariantId);
+            if (offer == null || !offer.active() || offer.stockQuantity() == null) {
+                continue;
+            }
+            quantityByVariant.merge(offer.variantId(), item.quantity(), Integer::sum);
+            offerByVariant.put(offer.variantId(), offer);
+        }
+        quantityByVariant.forEach((variantId, quantity) -> {
+            ResolvedOffer offer = offerByVariant.get(variantId);
+            int stock = offer.stockQuantity();
+            if (stock <= 0) {
+                throw new OrderStateException("order.soldOut", offer.productName());
+            }
+            if (quantity > stock) {
+                throw new OrderStateException("order.insufficientStock", offer.productName(), stock);
             }
         });
     }
