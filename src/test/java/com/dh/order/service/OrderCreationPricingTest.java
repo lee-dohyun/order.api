@@ -150,6 +150,81 @@ class OrderCreationPricingTest {
         assertThat(response.items()).singleElement().satisfies(item -> assertThat(item.quantity()).isEqualTo(2));
     }
 
+    /**
+     * order.api#47 - 재고보다 많은 수량은 주문을 만들 때 거른다. 전에는 결제할 수 없는 주문이 CREATED 로
+     * 만들어지고(재고 58 에 99,999개, 약 21.9억 원 - 운영 실측) 결제 단계에서야 막혔다.
+     * 여기서는 조회만 하고 차감은 여전히 결제 때 한다.
+     */
+    @Test
+    void 재고보다_많이_담으면_주문이_거부되고_남은_수량을_알려준다() {
+        when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
+                SKU, 재고오퍼(대표_오퍼, SKU, true, 58)));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(SKU, 59), 게스트(), null))
+                .isInstanceOfSatisfying(OrderStateException.class, e -> {
+                    assertThat(e.getMessageKey()).isEqualTo("order.insufficientStock");
+                    assertThat(e.getMessageArgs()).containsExactly("게이밍 모니터 27인치", 58);
+                });
+    }
+
+    @Test
+    void 재고와_같은_수량까지는_통과한다() {
+        when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
+                SKU, 재고오퍼(대표_오퍼, SKU, true, 58)));
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 58), 게스트(), null);
+
+        assertThat(response.items()).singleElement().satisfies(item -> assertThat(item.quantity()).isEqualTo(58));
+    }
+
+    @Test
+    void 재고가_0이면_품절로_거부된다() {
+        when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
+                SKU, 재고오퍼(대표_오퍼, SKU, true, 0)));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null))
+                .isInstanceOfSatisfying(OrderStateException.class, e -> {
+                    assertThat(e.getMessageKey()).isEqualTo("order.soldOut");
+                    assertThat(e.getMessageArgs()).containsExactly("게이밍 모니터 27인치");
+                });
+    }
+
+    @Test
+    void 같은_SKU를_여러_줄로_나눠_담아도_합계로_재고를_본다() {
+        when(productApiClient.resolveOffers(anyList())).thenReturn(Map.of(
+                601L, 재고오퍼(601L, 43L, true, 5)));
+        when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
+                43L, 재고오퍼(602L, 43L, true, 5)));
+        OrderCreateRequest 합계6 = new OrderCreateRequest(
+                "홍길동", "010-1234-5678", "서울시 어딘가", null, null, null, null, null,
+                List.of(new OrderItemRequest(601L, null, 3), new OrderItemRequest(null, 43L, 3)));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, 합계6, 게스트(), null))
+                .isInstanceOf(OrderStateException.class)
+                .hasMessage("order.insufficientStock");
+    }
+
+    @Test
+    void 재고를_모르면_검사하지_않는다() {
+        // 재고 필드를 싣지 않는 product.api(배포 순서가 어긋난 동안)와도 주문은 만들어져야 한다.
+        when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
+                SKU, 재고오퍼(대표_오퍼, SKU, true, null)));
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 99_999), 게스트(), null);
+
+        assertThat(response.items()).singleElement().satisfies(item -> assertThat(item.quantity()).isEqualTo(99_999));
+    }
+
+    @Test
+    void 판매하지_않는_상품은_재고가_없어도_판매_불가로_안내한다() {
+        when(productApiClient.resolveFeaturedOffersByVariant(anyList())).thenReturn(Map.of(
+                SKU, 재고오퍼(대표_오퍼, SKU, false, 0)));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null))
+                .isInstanceOf(OrderStateException.class)
+                .hasMessage("order.itemUnavailable");
+    }
+
     @Test
     void offerId_경로에서도_최대_구매_수량이_걸린다() {
         when(productApiClient.resolveOffers(anyList())).thenReturn(Map.of(
@@ -329,7 +404,13 @@ class OrderCreationPricingTest {
     private static ResolvedOffer 오퍼(Long offerId, Long variantId, BigDecimal price, boolean active,
             Long sellerId, String sellerName, Integer maxPurchaseQuantity) {
         return new ResolvedOffer(offerId, variantId, 7L, "게이밍 모니터 27인치", sellerId, sellerName,
-                price, null, false, null, active, maxPurchaseQuantity);
+                price, null, false, null, active, maxPurchaseQuantity, null);
+    }
+
+    /** 재고를 아는 오퍼. 구매 수량 한도는 없다. */
+    private static ResolvedOffer 재고오퍼(Long offerId, Long variantId, boolean active, Integer stockQuantity) {
+        return new ResolvedOffer(offerId, variantId, 7L, "게이밍 모니터 27인치", 1L, "포스셀렉트",
+                카탈로그_가격, null, false, null, active, null, stockQuantity);
     }
 
     private void 대표오퍼를_돌려주도록(Long variantId, BigDecimal price, boolean active) {

@@ -81,7 +81,7 @@ class OrderIdempotencyIntegrationTest {
 
     private static ResolvedOffer 오퍼() {
         return new ResolvedOffer(501L, SKU, 7L, "상품", 1L, "포스셀렉트", new BigDecimal("10000"),
-                BigDecimal.ZERO, true, null, true, null);
+                BigDecimal.ZERO, true, null, true, null, null);
     }
 
     private static OrderCreateRequest 주문요청(int quantity) {
