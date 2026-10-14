@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -25,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.dh.order.config.AuthApiClient;
 import com.dh.order.config.ProductApiClient;
 import com.dh.order.config.ProductApiClient.ResolvedOffer;
+import com.dh.order.config.ProductApiClient.ShippingQuoteItem;
 import com.dh.order.domain.Order;
 import com.dh.order.domain.OrderItem;
 import com.dh.order.domain.OrderStatus;
@@ -149,6 +151,7 @@ public class OrderService {
         checkStock(request.items(), byOfferId, byVariantId);
 
         BigDecimal total = BigDecimal.ZERO;
+        List<ShippingQuoteItem> shippingItems = new ArrayList<>();
         for (OrderItemRequest itemRequest : request.items()) {
             // 조회에서 빠졌거나(없는 오퍼, ACTIVE 오퍼가 없는 SKU) 주문 불가인 오퍼는 주문을 만들지
             // 않는다. 가격을 모르는 채로 주문을 생성하면 결제 금액을 확정할 수 없다. active 는 오퍼
@@ -172,7 +175,11 @@ public class OrderService {
             item.setSellerName(offer.sellerName());
             order.addItem(item);
             total = total.add(offer.price().multiply(BigDecimal.valueOf(itemRequest.quantity())));
+            shippingItems.add(new ShippingQuoteItem(offer.offerId(), itemRequest.quantity()));
         }
+        // 배송비도 가격과 같은 이유로 요청 본문이 아니라 product.api 에서만 온다(gateway#322). 견적을 못
+        // 받으면 주문을 만들지 않는다 - 배송비를 0 으로 두고 진행하면 그 금액으로 결제가 확정된다.
+        order.setShippingFee(productApiClient.quoteShipping(shippingItems));
         applyGradeDiscount(order, total, requester);
         order.setIdempotencyKey(idempotencyKey);
         order.setIdempotencyRequestHash(requestHash);
@@ -193,7 +200,8 @@ public class OrderService {
     }
 
     /**
-     * 결제 금액을 "상품 합계 - 회원 등급 할인"으로 확정하고 그 근거를 주문에 스냅샷으로 남긴다(gateway#82).
+     * 결제 금액을 "상품 합계 - 회원 등급 할인 + 배송비"로 확정하고 그 근거를 주문에 스냅샷으로 남긴다
+     * (gateway#82, gateway#322). 할인은 상품 합계에만 적용한다 - 배송비는 깎지 않는다.
      *
      * <p>할인율은 요청 본문이 아니라 auth.api 에서만 온다 — 가격을 product.api 에서 확정받는 것과 같은
      * 이유다. 로그인하지 않은 게스트는 등급이 없으므로 조회하지 않는다. 레거시 이메일 폴백도 쓰지
@@ -214,7 +222,7 @@ public class OrderService {
             }
         }
         order.setDiscountAmount(discount);
-        order.setTotalPrice(subtotal.subtract(discount));
+        order.setTotalPrice(subtotal.subtract(discount).add(order.getShippingFee()));
     }
 
     /**
@@ -551,8 +559,9 @@ public class OrderService {
                 order.getAddress2(),
                 order.getStatus().name(),
                 order.getTotalPrice(),
-                order.getTotalPrice().add(order.getDiscountAmount()),
+                order.getTotalPrice().add(order.getDiscountAmount()).subtract(order.getShippingFee()),
                 order.getDiscountAmount(),
+                order.getShippingFee(),
                 order.getGradeCode(),
                 order.getGradeDiscountRate(),
                 items,

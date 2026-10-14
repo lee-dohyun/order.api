@@ -95,7 +95,7 @@ public class Order {
     @Column(length = 200)
     private String address2;
 
-    /** 결제 금액. 등급 할인({@link #discountAmount})이 이미 빠진 값이다. */
+    /** 결제 금액. 등급 할인({@link #discountAmount})이 빠지고 배송비({@link #shippingFee})가 더해진 값이다. */
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal totalPrice;
 
@@ -106,6 +106,13 @@ public class Order {
      */
     @Column(name = "discount_amount", nullable = false, precision = 12, scale = 2)
     private BigDecimal discountAmount = BigDecimal.ZERO;
+
+    /**
+     * 주문 시점에 청구한 배송비 스냅샷(gateway#322). 판매 정책은 판매자가 바꿀 수 있으므로 값을 남겨 둔다.
+     * 계산은 product.api 가 하고(판매자별 묶음 1회) 여기서는 받은 금액을 저장만 한다.
+     */
+    @Column(name = "shipping_fee", nullable = false, precision = 12, scale = 2)
+    private BigDecimal shippingFee = BigDecimal.ZERO;
 
     @Column(name = "grade_code", length = 20)
     private String gradeCode;
