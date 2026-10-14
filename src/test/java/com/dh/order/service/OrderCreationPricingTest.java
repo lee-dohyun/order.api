@@ -57,6 +57,8 @@ class OrderCreationPricingTest {
         orderRepository = mock(OrderRepository.class);
         channelRepository = mock(com.dh.order.repository.ChannelRepository.class);
         when(orderRepository.save(any(Order.class))).thenAnswer(inv -> inv.getArgument(0));
+        // 배송비는 따로 지정한 테스트 외에는 무료(0원)로 둔다 - 기존 금액 단언이 상품 금액만 보게 한다.
+        when(productApiClient.quoteShipping(anyList())).thenReturn(BigDecimal.ZERO);
 
         com.dh.order.domain.Channel channel = new com.dh.order.domain.Channel("종합몰", "posselect.com");
         org.springframework.test.util.ReflectionTestUtils.setField(channel, "id", 1L);
@@ -302,6 +304,56 @@ class OrderCreationPricingTest {
 
         assertThat(response.totalPrice()).isEqualByComparingTo(new BigDecimal("8000"));
         assertThat(response.items()).extracting(i -> i.offerId()).containsExactly(601L, 602L);
+    }
+
+    // ------------------------------------------------------------------ 배송비 (gateway#322)
+
+    @Test
+    void 배송비가_결제_금액에_더해지고_주문에_남는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        when(productApiClient.quoteShipping(anyList())).thenReturn(new BigDecimal("3000"));
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 게스트(), null);
+
+        assertThat(response.subtotalPrice()).isEqualByComparingTo("518000");
+        assertThat(response.shippingFee()).isEqualByComparingTo("3000");
+        assertThat(response.totalPrice()).isEqualByComparingTo("521000");
+    }
+
+    @Test
+    void 등급_할인은_상품_금액에만_적용되고_배송비는_깎지_않는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        등급을_돌려주도록("GOLD", "5.00");
+        when(productApiClient.quoteShipping(anyList())).thenReturn(new BigDecimal("3000"));
+
+        OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 회원(), null);
+
+        assertThat(response.subtotalPrice()).isEqualByComparingTo("518000");
+        assertThat(response.discountAmount()).isEqualByComparingTo("25900");
+        assertThat(response.shippingFee()).isEqualByComparingTo("3000");
+        assertThat(response.totalPrice()).isEqualByComparingTo("495100");
+    }
+
+    @Test
+    void 배송비_견적에는_요청_본문이_아니라_확정된_오퍼와_수량이_간다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+
+        orderService.createOrder(1L, 주문요청(SKU, 2), 게스트(), null);
+
+        // variantId 만 보낸 요청이어도 견적은 서버가 고른 대표 오퍼로 요청한다 - 금액을 확정한 오퍼와 같아야 한다.
+        org.mockito.Mockito.verify(productApiClient)
+                .quoteShipping(List.of(new ProductApiClient.ShippingQuoteItem(대표_오퍼, 2)));
+    }
+
+    @Test
+    void 배송비를_확인하지_못하면_주문을_만들지_않는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        when(productApiClient.quoteShipping(anyList())).thenThrow(new OrderStateException("order.catalogUnavailable"));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null))
+                .isInstanceOf(OrderStateException.class)
+                .hasMessage("order.catalogUnavailable");
+        org.mockito.Mockito.verify(orderRepository, org.mockito.Mockito.never()).save(any(Order.class));
     }
 
     // ------------------------------------------------------------------ 등급 할인 (gateway#82)

@@ -79,6 +79,56 @@ public class ProductApiClient {
         throw new OrderStateException("order.catalogUnavailable");
     }
 
+    /**
+     * 주문 전체의 배송비를 product.api 에서 받는다(gateway#322). 계산 규칙(판매자별 묶음 1회, 조건부 무료의
+     * 기준액)은 product.api {@code ShippingFeeCalculator} 에만 있다 - 장바구니가 보여 준 금액과 여기서
+     * 청구하는 금액이 같은 식에서 나와야 해서 이쪽에 복제하지 않는다.
+     *
+     * @throws OrderStateException 호출에 실패했거나 응답에 금액이 없으면. 배송비를 모르는 채로 주문을
+     *         만들면 그 금액으로 결제가 확정되므로 0 으로 대신하지 않는다.
+     */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "quoteShippingFallback")
+    public BigDecimal quoteShipping(List<ShippingQuoteItem> items) {
+        try {
+            String json = objectMapper.writeValueAsString(Map.of("items", items));
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/offers/shipping-quote"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(2))
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                log.warn("배송비 견적 조회 실패 (status={}, body={})", response.statusCode(), response.body());
+                throw new OrderStateException("order.catalogUnavailable");
+            }
+            BigDecimal fee = objectMapper.readValue(response.body(), ShippingQuote.class).shippingFee();
+            if (fee == null || fee.signum() < 0) {
+                log.warn("배송비 견적 응답이 올바르지 않다 (body={})", response.body());
+                throw new OrderStateException("order.catalogUnavailable");
+            }
+            return fee;
+        } catch (IOException e) {
+            log.warn("상품 서비스 연결 실패 (배송비 견적, items={})", items, e);
+            throw new OrderStateException("order.catalogUnavailable");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("상품 서비스 호출 중단 (배송비 견적, items={})", items, e);
+            throw new OrderStateException("order.catalogUnavailable");
+        }
+    }
+
+    public BigDecimal quoteShippingFallback(List<ShippingQuoteItem> items, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 상품 서비스 호출 불가 (배송비 견적, items={})", items, t);
+        throw new OrderStateException("order.catalogUnavailable");
+    }
+
+    /** 배송비 견적 요청의 한 줄 - 확정된 오퍼와 수량. 금액은 보내지 않는다(product.api 가 다시 읽는다). */
+    public record ShippingQuoteItem(Long offerId, int quantity) {
+    }
+
+    private record ShippingQuote(BigDecimal shippingFee) {
+    }
+
     private List<ResolvedOffer> fetchOffers(String param, List<Long> ids) {
         if (ids.isEmpty()) {
             return List.of();

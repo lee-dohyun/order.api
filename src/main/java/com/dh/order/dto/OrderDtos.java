@@ -79,8 +79,8 @@ public class OrderDtos {
     /**
      * guestToken은 주문 생성 응답에서만 채워진다 - 조회 응답에서는 항상 null이다.
      *
-     * <p>{@code totalPrice} 는 결제 금액(등급 할인 차감 후)이고 {@code subtotalPrice} 는 할인 전 상품
-     * 합계다. {@code gradeCode}/{@code gradeDiscountRate} 는 할인이 적용된 주문에만 채워진다(gateway#82).
+     * <p>{@code totalPrice} 는 결제 금액(상품 합계 - 등급 할인 + 배송비)이고 {@code subtotalPrice} 는 할인 전
+     * 상품 합계다. {@code shippingFee} 는 주문 시점에 청구한 배송비다(gateway#322). {@code gradeCode}/{@code gradeDiscountRate} 는 할인이 적용된 주문에만 채워진다(gateway#82).
      */
     public record OrderResponse(
             Long id,
@@ -96,6 +96,7 @@ public class OrderDtos {
             BigDecimal totalPrice,
             BigDecimal subtotalPrice,
             BigDecimal discountAmount,
+            BigDecimal shippingFee,
             String gradeCode,
             BigDecimal gradeDiscountRate,
             List<OrderItemResponse> items,

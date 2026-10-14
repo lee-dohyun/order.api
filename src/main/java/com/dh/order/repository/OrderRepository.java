@@ -57,12 +57,15 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * CANCELLED/REFUNDED 는 확정이 취소된 것이다. "결제했으니 등급이 오른다"로 만들면
      * 주문 후 환불을 반복해 등급을 올릴 수 있다.
      *
+     * <p><b>배송비는 뺀다</b>(gateway#322) — 등급은 상품 구매 금액으로 매긴다. 배송비를 넣으면 유료배송
+     * 상품을 산 회원이 같은 상품 금액으로도 더 빨리 승급한다.
+     *
      * <p><b>게스트 주문(customerId is null)은 제외한다</b> — 귀속시킬 회원이 없다.
      * 레거시 이메일 폴백도 쓰지 않는다. 등급은 금전적 혜택이라 "아마 이 사람일 것"으로
      * 집계하면 안 된다.
      */
     @Query("""
-            select o.customerId as customerId, sum(o.totalPrice) as confirmedAmount
+            select o.customerId as customerId, sum(o.totalPrice - o.shippingFee) as confirmedAmount
             from Order o
             where o.customerId is not null
               and o.status = com.dh.order.domain.OrderStatus.DELIVERED
@@ -77,7 +80,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * 구매확정이 없으면 0 이다.
      */
     @Query("""
-            select coalesce(sum(o.totalPrice), 0)
+            select coalesce(sum(o.totalPrice - o.shippingFee), 0)
             from Order o
             where o.customerId = :customerId
               and o.status = com.dh.order.domain.OrderStatus.DELIVERED
