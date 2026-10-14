@@ -1,10 +1,12 @@
 package com.dh.order.controller;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +16,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -89,12 +92,17 @@ public class OrderController {
     // 로그인한 사용자 본인의 주문 목록.
     @GetMapping("/mine")
     public ResponseEntity<List<OrderSummaryResponse>> getMine(
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            // 기간(한국 날짜, 양 끝 포함)과 페이지(gateway#321). 전부 선택 — 없으면 예전처럼 전체 목록.
+            @RequestParam(value = "from", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(value = "to", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "size", required = false) Integer size) {
         Requester requester = extractRequester(authHeader, null);
         if (requester.userId() == null && requester.userEmail() == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return ResponseEntity.ok(orderService.getMyOrders(requester.userId(), requester.userEmail()));
+        return ResponseEntity.ok(orderService.getMyOrders(requester.userId(), requester.userEmail(), from, to, page, size));
     }
 
     // admin.front(Keycloak staff realm 로그인) 전용 전체 주문 목록. Authorization 헤더의 토큰을 직접 검증한다.

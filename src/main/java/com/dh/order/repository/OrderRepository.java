@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -42,11 +43,13 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      */
     @Query("""
             select o from Order o
-            where (:customerId is not null and o.customerId = :customerId)
-               or (o.customerId is null and :customerEmail is not null and o.customerEmail = :customerEmail)
-            order by o.createdAt desc
+            where ((:customerId is not null and o.customerId = :customerId)
+                or (o.customerId is null and :customerEmail is not null and o.customerEmail = :customerEmail))
+              and o.createdAt >= :from and o.createdAt < :to
+            order by o.createdAt desc, o.id desc
             """)
-    List<Order> findMine(@Param("customerId") String customerId, @Param("customerEmail") String customerEmail);
+    List<Order> findMineBetween(@Param("customerId") String customerId, @Param("customerEmail") String customerEmail,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to, Pageable pageable);
 
     List<Order> findAllByOrderByCreatedAtDesc();
 
