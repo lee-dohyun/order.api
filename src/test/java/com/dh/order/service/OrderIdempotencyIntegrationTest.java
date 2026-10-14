@@ -87,7 +87,7 @@ class OrderIdempotencyIntegrationTest {
 
     private static OrderCreateRequest 주문요청(int quantity) {
         return new OrderCreateRequest("홍길동", "010-1234-5678", "서울시 강남구 테헤란로 1",
-                null, null, null, null, null, List.of(new OrderItemRequest(null, SKU, quantity)));
+                null, null, null, null, null, List.of(new OrderItemRequest(null, SKU, quantity)), "guest@example.com");
     }
 
     private static Requester 게스트() {

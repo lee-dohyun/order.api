@@ -104,4 +104,30 @@ class OrderNotificationServiceTest {
         verify(authApiClient).sendNotification(any());
         verify(mailSender, never()).send(any(SimpleMailMessage.class));
     }
+
+    @Test
+    @DisplayName("비회원 주문은 주문할 때 받은 이메일로 보내고, 본문에 조회 링크(주문번호·게스트 토큰)를 넣는다 (gateway#323)")
+    void 비회원_메일과_조회_링크() {
+        Order guest = order(77L, null, null);
+        when(guest.getGuestEmail()).thenReturn("guest@test");
+        when(guest.getGuestToken()).thenReturn("tok-123");
+
+        service.notifyPaid(guest);
+
+        ArgumentCaptor<SimpleMailMessage> mail = ArgumentCaptor.forClass(SimpleMailMessage.class);
+        verify(mailSender).send(mail.capture());
+        assertThat(mail.getValue().getTo()).containsExactly("guest@test");
+        assertThat(mail.getValue().getText()).contains("https://product.posselect.com/guest-order?id=77&token=tok-123");
+        verify(authApiClient, never()).sendNotification(any());
+    }
+
+    @Test
+    @DisplayName("회원 메일에는 비회원 조회 링크를 넣지 않는다")
+    void 회원_메일에는_조회_링크_없음() {
+        service.notifyPaid(order(5L, "sub-1", "a@test"));
+
+        ArgumentCaptor<SimpleMailMessage> mail = ArgumentCaptor.forClass(SimpleMailMessage.class);
+        verify(mailSender).send(mail.capture());
+        assertThat(mail.getValue().getText()).doesNotContain("guest-order");
+    }
 }

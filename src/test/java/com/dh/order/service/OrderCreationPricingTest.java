@@ -136,7 +136,7 @@ class OrderCreationPricingTest {
                 42L, 오퍼(512L, 42L, 카탈로그_가격, true, 1L, "포스셀렉트", 2)));
         OrderCreateRequest 합계3 = new OrderCreateRequest(
                 "홍길동", "010-1234-5678", "서울시 어딘가", null, null, null, null, null,
-                List.of(new OrderItemRequest(null, 41L, 1), new OrderItemRequest(null, 42L, 2)));
+                List.of(new OrderItemRequest(null, 41L, 1), new OrderItemRequest(null, 42L, 2)), "guest@example.com");
 
         assertThatThrownBy(() -> orderService.createOrder(1L, 합계3, 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
@@ -200,7 +200,7 @@ class OrderCreationPricingTest {
                 43L, 재고오퍼(602L, 43L, true, 5)));
         OrderCreateRequest 합계6 = new OrderCreateRequest(
                 "홍길동", "010-1234-5678", "서울시 어딘가", null, null, null, null, null,
-                List.of(new OrderItemRequest(601L, null, 3), new OrderItemRequest(null, 43L, 3)));
+                List.of(new OrderItemRequest(601L, null, 3), new OrderItemRequest(null, 43L, 3)), "guest@example.com");
 
         assertThatThrownBy(() -> orderService.createOrder(1L, 합계6, 게스트(), null))
                 .isInstanceOf(OrderStateException.class)
@@ -299,12 +299,38 @@ class OrderCreationPricingTest {
         OrderCreateRequest request = new OrderCreateRequest(
                 "홍길동", "010-1234-5678", "서울시 어딘가",
                 null, null, null, null, null,
-                List.of(new OrderItemRequest(601L, null, 2), new OrderItemRequest(null, 22L, 3)));
+                List.of(new OrderItemRequest(601L, null, 2), new OrderItemRequest(null, 22L, 3)), "guest@example.com");
 
         OrderResponse response = orderService.createOrder(1L, request, 게스트(), null);
 
         assertThat(response.totalPrice()).isEqualByComparingTo(new BigDecimal("8000"));
         assertThat(response.items()).extracting(i -> i.offerId()).containsExactly(601L, 602L);
+    }
+
+    // ------------------------------------------------------------------ 비회원 이메일 (gateway#323)
+
+    @Test
+    void 비회원_주문은_연락_이메일이_없으면_만들지_않는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        OrderCreateRequest noEmail = new OrderCreateRequest(
+                "홍길동", "010-1234-5678", "서울시 어딘가", null, null, null, null, null,
+                List.of(new OrderItemRequest(null, SKU, 1)));
+
+        assertThatThrownBy(() -> orderService.createOrder(1L, noEmail, 게스트(), null))
+                .isInstanceOf(OrderStateException.class)
+                .hasMessage("order.guestEmailRequired");
+    }
+
+    @Test
+    void 비회원_이메일은_소유자_판정에_쓰는_customerEmail_이_아니라_guestEmail_에_남는다() {
+        대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
+        org.mockito.ArgumentCaptor<Order> saved = org.mockito.ArgumentCaptor.forClass(Order.class);
+
+        orderService.createOrder(1L, 주문요청(SKU, 1), 게스트(), null);
+
+        org.mockito.Mockito.verify(orderRepository).save(saved.capture());
+        assertThat(saved.getValue().getCustomerEmail()).isNull();
+        assertThat(saved.getValue().getGuestEmail()).isEqualTo("guest@example.com");
     }
 
     // ------------------------------------------------------------------ 배송비 (gateway#322)
@@ -475,14 +501,14 @@ class OrderCreationPricingTest {
         return new OrderCreateRequest(
                 "홍길동", "010-1234-5678", "서울시 어딘가",
                 null, null, null, null, null,
-                List.of(new OrderItemRequest(null, variantId, quantity)));
+                List.of(new OrderItemRequest(null, variantId, quantity)), "guest@example.com");
     }
 
     private OrderCreateRequest 오퍼주문요청(Long offerId, int quantity) {
         return new OrderCreateRequest(
                 "홍길동", "010-1234-5678", "서울시 어딘가",
                 null, null, null, null, null,
-                List.of(new OrderItemRequest(offerId, null, quantity)));
+                List.of(new OrderItemRequest(offerId, null, quantity)), "guest@example.com");
     }
 
     private void 등급을_돌려주도록(String code, String discountRate) {
