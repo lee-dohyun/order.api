@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
+import org.springframework.boot.jackson2.autoconfigure.Jackson2AutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -28,7 +28,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-import io.github.resilience4j.springboot3.circuitbreaker.autoconfigure.CircuitBreakerAutoConfiguration;
+import io.github.resilience4j.springboot.circuitbreaker.autoconfigure.CircuitBreakerAutoConfiguration;
 
 /**
  * 재고 차감 호출의 실패 분류 (order.api#45).
@@ -38,7 +38,7 @@ import io.github.resilience4j.springboot3.circuitbreaker.autoconfigure.CircuitBr
  * 정상 결제까지 막는다. 분류는 서킷브레이커 프록시와 폴백을 거쳐야 드러나므로 실제 프록시와 HTTP 로 본다.
  */
 @SpringBootTest(classes = ProductApiClient.class)
-@ImportAutoConfiguration({ JacksonAutoConfiguration.class, AopAutoConfiguration.class, CircuitBreakerAutoConfiguration.class })
+@ImportAutoConfiguration({ Jackson2AutoConfiguration.class, AopAutoConfiguration.class, CircuitBreakerAutoConfiguration.class })
 class ProductApiClientDeductTest {
 
     private static HttpServer server;
