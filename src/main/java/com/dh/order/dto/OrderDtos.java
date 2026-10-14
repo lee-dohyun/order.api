@@ -43,7 +43,22 @@ public class OrderDtos {
             String zipCode,
             String address1,
             String address2,
-            @NotEmpty @Valid List<OrderItemRequest> items) {
+            @NotEmpty @Valid List<OrderItemRequest> items,
+            /** 비회원 주문의 연락 이메일(gateway#323). 비회원은 필수, 회원은 무시한다(계정 이메일로 보낸다). */
+            @jakarta.validation.constraints.Email @jakarta.validation.constraints.Size(max = 200) String guestEmail) {
+
+        public OrderCreateRequest(String ordererName, String ordererPhone, String shippingAddress, String recipientName,
+                String recipientPhone, String zipCode, String address1, String address2, List<OrderItemRequest> items) {
+            this(ordererName, ordererPhone, shippingAddress, recipientName, recipientPhone, zipCode, address1, address2,
+                    items, null);
+        }
+    }
+
+    /** 비회원 주문 조회(gateway#323). 주문번호와 주문할 때 적은 연락처가 맞으면 게스트 토큰을 돌려준다. */
+    public record GuestLookupRequest(@NotNull Long orderId, @NotBlank String phone) {
+    }
+
+    public record GuestLookupResponse(Long orderId, String guestToken) {
     }
 
     /**

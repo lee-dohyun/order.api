@@ -92,6 +92,16 @@ public class OrderController {
                 .body(orderService.createOrder(channelId, request, requester, idempotencyKey));
     }
 
+    /**
+     * 비회원 주문 조회(gateway#323) — 로그인 없이 product.posselect.com 에서 부른다. 주문번호와 연락처가 맞으면 게스트
+     * 토큰을 돌려주고, 화면은 그 토큰으로 상세·취소·반품을 이어 간다. 틀리면 이유를 구분하지 않고 404.
+     */
+    @PostMapping("/guest-lookup")
+    public com.dh.order.dto.OrderDtos.GuestLookupResponse guestLookup(
+            @jakarta.validation.Valid @RequestBody com.dh.order.dto.OrderDtos.GuestLookupRequest request) {
+        return orderService.lookupGuestOrder(request.orderId(), request.phone());
+    }
+
     // ------------------------------------------------------------------ 취소·반품 (gateway#320)
 
     /**

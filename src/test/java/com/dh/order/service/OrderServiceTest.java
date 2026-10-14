@@ -364,4 +364,33 @@ class OrderServiceTest {
         verify(orderRepository).findMineBetween(eq("member-1"), eq(null), any(), any(),
                 eq(org.springframework.data.domain.PageRequest.of(0, 100)));
     }
+
+    // ------------------------------------------------------------------ 비회원 주문 조회 (gateway#323)
+
+    @Test
+    void lookupGuestOrder_ShouldReturnToken_WhenPhoneDigitsMatch() {
+        order.setGuestToken("tok-1");
+        order.setOrdererPhone("010-1234-5678");
+        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+
+        assertThat(orderService.lookupGuestOrder(1L, "01012345678").guestToken()).isEqualTo("tok-1");
+    }
+
+    @Test
+    void lookupGuestOrder_ShouldBe404_ForWrongPhoneOrMemberOrder() {
+        order.setGuestToken("tok-1");
+        order.setOrdererPhone("010-1234-5678");
+        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        assertThatThrownBy(() -> orderService.lookupGuestOrder(1L, "010-0000-0000"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+        assertThatThrownBy(() -> orderService.lookupGuestOrder(1L, "---"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+
+        Order member = new Order();
+        member.setCustomerId("member-1");
+        member.setOrdererPhone("010-1234-5678");
+        given(orderRepository.findById(2L)).willReturn(Optional.of(member));
+        assertThatThrownBy(() -> orderService.lookupGuestOrder(2L, "01012345678"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
 }

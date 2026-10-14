@@ -117,6 +117,13 @@ public class Order {
     /**
      * 취소·반품으로 돌려준 상품 금액(할인 몫 차감 후)의 누적(gateway#320, V12). 등급 산정의 구매확정 금액에서 뺀다.
      */
+    /**
+     * 비회원 주문의 연락 이메일(gateway#323, V14). 결제 완료 메일과 조회 링크를 보낼 곳일 뿐 접근 권한이 아니다 —
+     * 소유자 판정({@link #isAccessibleBy})은 이 값을 보지 않는다.
+     */
+    @Column(name = "guest_email", length = 200)
+    private String guestEmail;
+
     @Column(name = "returned_item_amount", nullable = false, precision = 12, scale = 2)
     private BigDecimal returnedItemAmount = BigDecimal.ZERO;
 

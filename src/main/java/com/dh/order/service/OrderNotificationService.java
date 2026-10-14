@@ -25,6 +25,9 @@ public class OrderNotificationService {
     /** 알림을 눌렀을 때 가는 곳. 주문 내역은 마이페이지에 있다(공통 헤더의 "주문조회"와 같은 주소). */
     static final String ORDER_LINK = "https://customer.posselect.com/mypage";
 
+    /** 비회원 주문 조회 화면(product.front, 로그인 없이 열린다 — gateway#323). 게스트 토큰이 곧 열쇠다. */
+    static final String GUEST_ORDER_LINK = "https://product.posselect.com/guest-order?id=%d&token=%s";
+
     private final JavaMailSender mailSender;
     private final AuthApiClient authApiClient;
     private final Messages messages;
@@ -76,23 +79,32 @@ public class OrderNotificationService {
         }
     }
 
-    // 게스트 주문(customerEmail 없음)은 스킵. 메일 발송 실패가 결제 자체를 실패시키면 안 되므로 예외를 여기서 흡수.
+    // 회원은 계정 이메일, 비회원은 주문할 때 받은 이메일로 보낸다(gateway#323). 둘 다 없으면 스킵.
+    // 메일 발송 실패가 결제 자체를 실패시키면 안 되므로 예외를 여기서 흡수.
     private void notifyByMail(Order order, String amount) {
-        if (order.getCustomerEmail() == null || order.getCustomerEmail().isBlank()) {
+        boolean guest = order.getCustomerEmail() == null || order.getCustomerEmail().isBlank();
+        String to = guest ? order.getGuestEmail() : order.getCustomerEmail();
+        if (to == null || to.isBlank()) {
             return;
         }
         try {
             SimpleMailMessage message = new SimpleMailMessage();
             message.setFrom(mailFrom);
-            message.setTo(order.getCustomerEmail());
+            message.setTo(to);
             // 주문번호는 문자열로 넘긴다 — 숫자로 넘기면 MessageFormat이 자릿수 구분자를 붙여 "1,234"가 된다.
             message.setSubject(messages.get("email.orderPaid.subject", String.valueOf(order.getId())));
-            message.setText(messages.get(
+            String body = messages.get(
                     "email.orderPaid.body",
                     order.getOrdererName(),
                     String.valueOf(order.getId()),
                     amount,
-                    order.getShippingAddress()));
+                    order.getShippingAddress());
+            if (guest && order.getGuestToken() != null) {
+                // 비회원은 이 링크가 주문을 다시 여는 방법이다 — 창을 닫아도 주문 상태를 볼 수 있다.
+                body += messages.get("email.orderPaid.guestLink",
+                        GUEST_ORDER_LINK.formatted(order.getId(), order.getGuestToken()));
+            }
+            message.setText(body);
             mailSender.send(message);
         } catch (MailException e) {
             log.warn("주문 결제 알림 메일 발송 실패 (orderId={})", order.getId(), e);

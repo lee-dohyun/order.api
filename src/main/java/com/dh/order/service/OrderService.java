@@ -145,7 +145,12 @@ public class OrderService {
         order.setCustomerEmail(requester.userEmail());
         // 소유자 계정이 없는 게스트 주문은 이 토큰이 유일한 접근 수단이다.
         if (requester.userId() == null && requester.userEmail() == null) {
+            // 비회원은 창을 닫으면 주문을 다시 볼 방법이 메일뿐이라 이메일을 받는다(gateway#323).
+            if (request.guestEmail() == null || request.guestEmail().isBlank()) {
+                throw new OrderStateException("order.guestEmailRequired");
+            }
             order.setGuestToken(UUID.randomUUID().toString());
+            order.setGuestEmail(request.guestEmail().trim());
         }
         order.setOrdererName(request.ordererName());
         order.setOrdererPhone(request.ordererPhone());
@@ -308,6 +313,22 @@ public class OrderService {
                 throw new OrderStateException("order.insufficientStock", offer.productName(), stock);
             }
         });
+    }
+
+    /**
+     * 비회원 주문 조회(gateway#323). 비회원 주문이고 연락처(숫자만 비교)가 맞으면 게스트 토큰을 준다. 없는 주문·회원
+     * 주문·연락처 불일치는 모두 같은 404 다 — 어느 쪽이 틀렸는지 알려 주면 주문번호를 훑어 비회원 주문을 찾을 수 있다.
+     */
+    public com.dh.order.dto.OrderDtos.GuestLookupResponse lookupGuestOrder(Long orderId, String phone) {
+        return orderRepository.findById(orderId)
+                .filter(o -> o.getGuestToken() != null)
+                .filter(o -> digits(o.getOrdererPhone()).equals(digits(phone)) && !digits(phone).isEmpty())
+                .map(o -> new com.dh.order.dto.OrderDtos.GuestLookupResponse(o.getId(), o.getGuestToken()))
+                .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
+    }
+
+    private static String digits(String s) {
+        return s == null ? "" : s.replaceAll("[^0-9]", "");
     }
 
     public OrderResponse getOrder(Long id, Requester requester) {
