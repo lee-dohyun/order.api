@@ -7,8 +7,11 @@ import java.util.Optional;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+
+import jakarta.persistence.LockModeType;
 
 import com.dh.order.domain.Order;
 
@@ -25,6 +28,15 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     // item이 2개 이상인 주문마다 NonUniqueResultException으로 죽는다(같은 Order 객체가
     // 중복돼도 JPA는 신경 안 쓴다 - 행 개수만 본다). distinct는 in-memory 중복 제거를
     // 트리거해서 Order 인스턴스를 하나로 접어준다.
+    /**
+     * 주문 행 잠금(gateway#320). 출고 전 취소 확정과 운송장 등록이 서로를 기다리게 한다 — 둘 다 "아직 출고 전인가"를
+     * 보고 쓰므로, 잠금 없이 동시에 들어오면 취소된 주문에 운송장이 붙는다. 클레임 금액 확정도 같은 잠금 아래에서
+     * 앞선 클레임 수를 다시 확인한다.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from Order o where o.id = :id")
+    Optional<Order> findByIdForUpdate(@Param("id") Long id);
+
     @Query("select distinct o from Order o left join fetch o.items where o.id = :id")
     Optional<Order> findByIdWithItems(@Param("id") Long id);
 
@@ -60,6 +72,8 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * CANCELLED/REFUNDED 는 확정이 취소된 것이다. "결제했으니 등급이 오른다"로 만들면
      * 주문 후 환불을 반복해 등급을 올릴 수 있다.
      *
+     * <p><b>취소·반품으로 돌려준 상품 금액도 뺀다</b>(gateway#320) — 일부만 반품한 주문도 DELIVERED 로 남는다.
+     *
      * <p><b>배송비는 뺀다</b>(gateway#322) — 등급은 상품 구매 금액으로 매긴다. 배송비를 넣으면 유료배송
      * 상품을 산 회원이 같은 상품 금액으로도 더 빨리 승급한다.
      *
@@ -68,7 +82,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * 집계하면 안 된다.
      */
     @Query("""
-            select o.customerId as customerId, sum(o.totalPrice - o.shippingFee) as confirmedAmount
+            select o.customerId as customerId, sum(o.totalPrice - o.shippingFee - o.returnedItemAmount) as confirmedAmount
             from Order o
             where o.customerId is not null
               and o.status = com.dh.order.domain.OrderStatus.DELIVERED
@@ -83,7 +97,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * 구매확정이 없으면 0 이다.
      */
     @Query("""
-            select coalesce(sum(o.totalPrice - o.shippingFee), 0)
+            select coalesce(sum(o.totalPrice - o.shippingFee - o.returnedItemAmount), 0)
             from Order o
             where o.customerId = :customerId
               and o.status = com.dh.order.domain.OrderStatus.DELIVERED

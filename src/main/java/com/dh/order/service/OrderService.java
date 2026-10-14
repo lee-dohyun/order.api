@@ -73,6 +73,7 @@ public class OrderService {
     private final InventoryCompensationStore inventoryCompensationStore;
     private final InventoryCompensator inventoryCompensator;
     private final AuthApiClient authApiClient;
+    private final com.dh.order.claim.OrderClaimRepository claimRepository;
 
     public OrderService(
             OrderRepository orderRepository,
@@ -85,7 +86,8 @@ public class OrderService {
             OrderPaymentFinalizer orderPaymentFinalizer,
             InventoryCompensationStore inventoryCompensationStore,
             InventoryCompensator inventoryCompensator,
-            AuthApiClient authApiClient) {
+            AuthApiClient authApiClient,
+            com.dh.order.claim.OrderClaimRepository claimRepository) {
         this.orderRepository = orderRepository;
         this.shipmentRepository = shipmentRepository;
         this.paymentRepository = paymentRepository;
@@ -97,6 +99,7 @@ public class OrderService {
         this.inventoryCompensationStore = inventoryCompensationStore;
         this.inventoryCompensator = inventoryCompensator;
         this.authApiClient = authApiClient;
+        this.claimRepository = claimRepository;
     }
 
     /**
@@ -185,7 +188,7 @@ public class OrderService {
         }
         // 배송비도 가격과 같은 이유로 요청 본문이 아니라 product.api 에서만 온다(gateway#322). 견적을 못
         // 받으면 주문을 만들지 않는다 - 배송비를 0 으로 두고 진행하면 그 금액으로 결제가 확정된다.
-        order.setShippingFee(productApiClient.quoteShipping(shippingItems));
+        order.setShippingFee(productApiClient.quoteShipping(shippingItems).shippingFee());
         applyGradeDiscount(order, total, requester);
         order.setIdempotencyKey(idempotencyKey);
         order.setIdempotencyRequestHash(requestHash);
@@ -470,13 +473,20 @@ public class OrderService {
     public RefundResponse refundOrder(Long orderId, RefundRequest request) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
-        if (order.getStatus() == OrderStatus.CREATED || order.getStatus() == OrderStatus.REFUNDED) {
+        if (order.getStatus() == OrderStatus.CREATED || order.getStatus() == OrderStatus.REFUNDED
+                || order.getStatus() == OrderStatus.CANCELLED) {
             throw new IllegalStateException("환불할 수 없는 주문 상태입니다: " + orderId);
         }
         Payment payment = paymentRepository.findByOrderId(orderId)
                 .orElseThrow(() -> new NoSuchElementException("payment not found for order: " + orderId));
 
-        Refund refund = new Refund(payment, payment.getAmount(), request.reason());
+        // 상품별 취소·반품으로 이미 돌려준 금액은 빼고 남은 결제 금액만 환불한다(gateway#320).
+        BigDecimal alreadyRefunded = claimRepository.findByOrderIdWithItems(orderId).stream()
+                .map(com.dh.order.claim.OrderClaim::getRefundAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        Refund refund = new Refund(payment, payment.getAmount().subtract(alreadyRefunded).max(BigDecimal.ZERO),
+                request.reason());
         refundRepository.save(refund);
         order.setStatus(OrderStatus.REFUNDED);
         // 재고 복원 예약을 REFUNDED 전이와 같은 트랜잭션에 넣는다(#34). 복원 호출은 커밋 뒤에 컨트롤러가
@@ -488,7 +498,8 @@ public class OrderService {
     /** admin이 운송장을 등록 - PAID 주문만 가능, 등록 즉시 SHIPPED로 전이한다. */
     @Transactional
     public ShipmentResponse createShipment(Long orderId, CreateShipmentRequest request) {
-        Order order = orderRepository.findById(orderId)
+        // 출고 전 취소 확정(ClaimCommitter)과 같은 주문 행 잠금을 잡는다 — 동시에 오면 취소된 주문에 운송장이 붙는다.
+        Order order = orderRepository.findByIdForUpdate(orderId)
                 .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
         if (order.getStatus() != OrderStatus.PAID) {
             throw new IllegalStateException("결제 완료 상태의 주문만 배송을 등록할 수 있습니다: " + orderId);
@@ -530,7 +541,7 @@ public class OrderService {
         return items.stream()
                 .map(i -> new OrderItemResponse(
                         i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity(),
-                        i.getSellerId(), i.getSellerName(), i.getOfferId()))
+                        i.getSellerId(), i.getSellerName(), i.getOfferId(), i.getId(), i.getClaimedQuantity()))
                 .toList();
     }
 
@@ -594,7 +605,11 @@ public class OrderService {
                 items,
                 order.getCreatedAt(),
                 order.getPaidAt(),
-                guestToken);
+                guestToken,
+                // 취소·반품 신청(gateway#320). 주문을 만든 직후에는 비어 있다.
+                order.getId() == null ? List.of()
+                        : claimRepository.findByOrderIdWithItems(order.getId()).stream()
+                                .map(com.dh.order.claim.ClaimDtos.ClaimResponse::of).toList());
     }
 
     private RefundResponse toRefundResponse(Order order, Refund refund) {

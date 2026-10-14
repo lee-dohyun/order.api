@@ -114,6 +114,12 @@ public class Order {
     @Column(name = "shipping_fee", nullable = false, precision = 12, scale = 2)
     private BigDecimal shippingFee = BigDecimal.ZERO;
 
+    /**
+     * 취소·반품으로 돌려준 상품 금액(할인 몫 차감 후)의 누적(gateway#320, V12). 등급 산정의 구매확정 금액에서 뺀다.
+     */
+    @Column(name = "returned_item_amount", nullable = false, precision = 12, scale = 2)
+    private BigDecimal returnedItemAmount = BigDecimal.ZERO;
+
     @Column(name = "grade_code", length = 20)
     private String gradeCode;
 

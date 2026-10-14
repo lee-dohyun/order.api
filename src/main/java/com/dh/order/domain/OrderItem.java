@@ -48,6 +48,13 @@ public class OrderItem {
     private Integer quantity;
 
     /**
+     * 진행 중(REQUESTED)·완료(COMPLETED) 클레임이 잡고 있는 수량(gateway#320, V12). 반려되면 돌려놓는다.
+     * 증감은 조건부 UPDATE 로만 한다({@code OrderClaimStore}) — DB CHECK 가 주문 수량을 넘지 못하게 막는다.
+     */
+    @Column(name = "claimed_quantity", nullable = false)
+    private Integer claimedQuantity = 0;
+
+    /**
      * 주문 확정에 쓰인 product.api 오퍼 id (order.api#14). {@code sellerId} 와 성격이 반대다 —
      * 스냅샷이 아니라 참조라 오퍼가 끝나면 끊긴다(FK 없음, 별도 DB). 이 컬럼 도입 전 주문은 null.
      */

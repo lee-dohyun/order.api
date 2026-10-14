@@ -83,7 +83,7 @@ class ProductApiClientShippingQuoteTest {
     void returnsQuotedFee() {
         responseBody.set("{\"shippingFee\":3000.00}");
 
-        assertThat(client.quoteShipping(List.of(new ShippingQuoteItem(501L, 2)))).isEqualByComparingTo("3000");
+        assertThat(client.quoteShipping(List.of(new ShippingQuoteItem(501L, 2))).shippingFee()).isEqualByComparingTo("3000");
         assertThat(requestBody.get()).isEqualTo("{\"items\":[{\"offerId\":501,\"quantity\":2}]}");
     }
 
@@ -92,7 +92,7 @@ class ProductApiClientShippingQuoteTest {
     void zeroIsValid() {
         responseBody.set("{\"shippingFee\":0}");
 
-        assertThat(client.quoteShipping(List.of(new ShippingQuoteItem(501L, 1)))).isEqualByComparingTo("0");
+        assertThat(client.quoteShipping(List.of(new ShippingQuoteItem(501L, 1))).shippingFee()).isEqualByComparingTo("0");
     }
 
     @Test
@@ -124,5 +124,23 @@ class ProductApiClientShippingQuoteTest {
         responseBody.set("{\"shippingFee\":-1}");
         assertThatThrownBy(() -> client.quoteShipping(List.of(new ShippingQuoteItem(501L, 1))))
                 .isInstanceOf(OrderStateException.class);
+    }
+
+    @Test
+    @DisplayName("반품 배송비를 함께 받고, 그 필드가 없는 옛 응답이면 0 으로 본다 (gateway#320)")
+    void returnShippingFee() {
+        responseBody.set("{\"shippingFee\":0,\"returnShippingFee\":2500}");
+        assertThat(client.quoteShipping(List.of(new ShippingQuoteItem(501L, 1))).returnShippingFee()).isEqualByComparingTo("2500");
+
+        responseBody.set("{\"shippingFee\":0}");
+        assertThat(client.quoteShipping(List.of(new ShippingQuoteItem(501L, 1))).returnShippingFee()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("주문 당시 단가를 줄 때만 unitPrice 를 싣는다")
+    void sendsUnitPriceOnlyWhenGiven() {
+        responseBody.set("{\"shippingFee\":0}");
+        client.quoteShipping(List.of(new ShippingQuoteItem(501L, 2, new java.math.BigDecimal("15000"))));
+        assertThat(requestBody.get()).isEqualTo("{\"items\":[{\"offerId\":501,\"quantity\":2,\"unitPrice\":15000}]}");
     }
 }
