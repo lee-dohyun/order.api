@@ -75,7 +75,7 @@ class OrderIdempotencyIntegrationTest {
         jdbc.update("DELETE FROM order_items");
         jdbc.update("DELETE FROM orders");
         given(productApiClient.resolveOffers(anyList())).willReturn(Map.of());
-        given(productApiClient.quoteShipping(anyList())).willReturn(java.math.BigDecimal.ZERO);
+        given(productApiClient.quoteShipping(anyList())).willReturn(new ProductApiClient.ShippingQuote(java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO));
         given(productApiClient.resolveFeaturedOffersByVariant(anyList())).willReturn(Map.of(SKU, 오퍼()));
         given(authApiClient.findMemberGrade(회원_SUB)).willReturn(Optional.empty());
     }

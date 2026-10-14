@@ -53,9 +53,10 @@ public class OrderDtos {
      * 3P 로 넘어가면 <b>전자상거래법상 판매자 신원을 청약 전에 제공할 의무</b>가 생기므로
      * 고객 응답에도 실려야 한다(order.api#15). 지금부터 실어 두면 그때 프론트 계약이 안 바뀐다.
      */
+    /** {@code orderItemId}·{@code claimedQuantity} 는 취소·반품 신청에 쓴다(gateway#320). */
     public record OrderItemResponse(
             Long productId, Long variantId, String productName, BigDecimal price, Integer quantity,
-            Long sellerId, String sellerName, Long offerId) {
+            Long sellerId, String sellerName, Long offerId, Long orderItemId, Integer claimedQuantity) {
     }
 
     /**
@@ -104,7 +105,8 @@ public class OrderDtos {
             List<OrderItemResponse> items,
             LocalDateTime createdAt,
             LocalDateTime paidAt,
-            String guestToken) {
+            String guestToken,
+            List<com.dh.order.claim.ClaimDtos.ClaimResponse> claims) {
     }
 
     public record CreateShipmentRequest(

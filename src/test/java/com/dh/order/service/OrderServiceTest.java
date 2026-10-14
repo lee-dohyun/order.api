@@ -63,6 +63,9 @@ class OrderServiceTest {
     @Mock
     private InventoryCompensator inventoryCompensator;
 
+    @Mock
+    private com.dh.order.claim.OrderClaimRepository claimRepository;
+
     @InjectMocks
     private OrderService orderService;
 
@@ -232,7 +235,7 @@ class OrderServiceTest {
     @Test
     void createShipment_ShouldTransitionToShipped_WhenStatusIsPaid() {
         order.setStatus(OrderStatus.PAID);
-        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(1L)).willReturn(Optional.of(order));
         given(shipmentRepository.findByOrderId(1L)).willReturn(Optional.empty());
 
         ShipmentResponse response = orderService.createShipment(1L, new CreateShipmentRequest("FedEx", "123"));
@@ -245,7 +248,7 @@ class OrderServiceTest {
     @Test
     void createShipment_ShouldThrowException_WhenNotPaid() {
         order.setStatus(OrderStatus.CREATED);
-        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(1L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.createShipment(1L, new CreateShipmentRequest("FedEx", "123")))
                 .isInstanceOf(IllegalStateException.class)

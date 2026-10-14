@@ -44,6 +44,8 @@ class OrderControllerAdminRoleTest {
     private CustomerJwtVerifier customerJwtVerifier;
     @MockitoBean
     private InventoryCompensator inventoryCompensator;
+    @MockitoBean
+    private com.dh.order.claim.ClaimService claimService;
     // @RestControllerAdvice(ApiExceptionHandler)가 @WebMvcTest 슬라이스에 함께 올라오므로 필요하다
     @MockitoBean
     private Messages messages;

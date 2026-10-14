@@ -57,12 +57,15 @@ public class OrderController {
     private static final String ORDER_MANAGER = "ORDER_MANAGER";
 
     private final OrderService orderService;
+    private final com.dh.order.claim.ClaimService claimService;
     private final AdminJwtVerifier adminJwtVerifier;
     private final CustomerJwtVerifier customerJwtVerifier;
     private final InventoryCompensator inventoryCompensator;
 
     public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier, 
-                           CustomerJwtVerifier customerJwtVerifier, InventoryCompensator inventoryCompensator) {
+                           CustomerJwtVerifier customerJwtVerifier, InventoryCompensator inventoryCompensator,
+            com.dh.order.claim.ClaimService claimService) {
+        this.claimService = claimService;
         this.orderService = orderService;
         this.adminJwtVerifier = adminJwtVerifier;
         this.customerJwtVerifier = customerJwtVerifier;
@@ -87,6 +90,64 @@ public class OrderController {
         Requester requester = extractRequester(authHeader, null);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(orderService.createOrder(channelId, request, requester, idempotencyKey));
+    }
+
+    // ------------------------------------------------------------------ 취소·반품 (gateway#320)
+
+    /**
+     * 고객 상품별 취소·반품 신청. 소유자는 게이트웨이가 넣은 신원 또는 게스트 토큰으로 판정하고, 아니면 404 다.
+     * 출고 전 취소는 즉시 환불까지 끝나고(201 의 status=COMPLETED), 반품은 관리자 승인을 기다린다(REQUESTED).
+     * {@code Idempotency-Key} 가 같으면 처음 만든 신청을 돌려준다.
+     */
+    @PostMapping("/{id}/claims")
+    public ResponseEntity<com.dh.order.claim.ClaimDtos.ClaimResponse> createClaim(
+            @PathVariable Long id,
+            @jakarta.validation.Valid @RequestBody com.dh.order.claim.ClaimDtos.ClaimCreateRequest request,
+            @RequestHeader(value = GUEST_TOKEN_HEADER, required = false) String guestToken,
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
+        Requester requester = extractRequester(authHeader, guestToken);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(claimService.request(id, requester, request, blankToNull(idempotencyKey)));
+    }
+
+    /** 관리자: 상태별 신청 목록(기본은 처리 대기). */
+    @GetMapping("/claims")
+    public ResponseEntity<List<com.dh.order.claim.ClaimDtos.ClaimResponse>> listClaims(
+            @RequestParam(value = "status", defaultValue = "REQUESTED") com.dh.order.claim.ClaimStatus status,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (verifyAdmin(authHeader) == null) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(claimService.listByStatus(status));
+    }
+
+    /** 관리자: 승인 — 환불과 재고 복원까지. 사유를 바꿀 수 있다(단순 변심 ↔ 하자·오배송). */
+    @PostMapping("/claims/{claimId}/approve")
+    public ResponseEntity<com.dh.order.claim.ClaimDtos.ClaimResponse> approveClaim(
+            @PathVariable Long claimId,
+            @RequestBody(required = false) com.dh.order.claim.ClaimDtos.ClaimApproveRequest request,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (verifyAdmin(authHeader) == null) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(claimService.approve(claimId, request == null ? null : request.reasonType()));
+    }
+
+    /** 관리자: 반려 — 잡아 둔 수량을 돌려놓는다. */
+    @PostMapping("/claims/{claimId}/reject")
+    public ResponseEntity<com.dh.order.claim.ClaimDtos.ClaimResponse> rejectClaim(
+            @PathVariable Long claimId,
+            @jakarta.validation.Valid @RequestBody com.dh.order.claim.ClaimDtos.ClaimRejectRequest request,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (verifyAdmin(authHeader) == null) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(claimService.reject(claimId, request.reason()));
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     // 로그인한 사용자 본인의 주문 목록.

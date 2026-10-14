@@ -21,9 +21,11 @@ public class InventoryCompensationStore {
 
     public static final String PAYMENT = "PAYMENT";
     public static final String REFUND = "REFUND";
+    /** 상품별 취소·반품 한 건(gateway#320). 주문이 아니라 클레임당 1행이고, 복원은 그 클레임 품목만 되돌린다. */
+    public static final String CLAIM = "CLAIM";
 
     /** 스케줄러와 즉시 처리 경로가 넘겨받는 미결 행. */
-    public record Task(Long id, Long orderId, String kind, int attempts) {
+    public record Task(Long id, Long orderId, String kind, int attempts, Long claimId) {
     }
 
     private final JdbcTemplate jdbc;
@@ -44,7 +46,7 @@ public class InventoryCompensationStore {
         return jdbc.update("""
                 INSERT INTO inventory_compensations (order_id, kind, status, touched_at, created_at)
                 VALUES (?, 'PAYMENT', 'WATCHING', ?, ?)
-                ON CONFLICT (order_id, kind) DO UPDATE
+                ON CONFLICT (order_id, kind) WHERE kind <> 'CLAIM' DO UPDATE
                    SET status = 'WATCHING', touched_at = EXCLUDED.touched_at, completed_at = NULL
                  WHERE inventory_compensations.status <> 'RESTORING'
                 """, orderId, now, now) == 1;
@@ -72,8 +74,33 @@ public class InventoryCompensationStore {
         jdbc.update("""
                 INSERT INTO inventory_compensations (order_id, kind, status, touched_at, created_at)
                 VALUES (?, 'REFUND', 'RESTORING', ?, ?)
-                ON CONFLICT (order_id, kind) DO NOTHING
+                ON CONFLICT (order_id, kind) WHERE kind <> 'CLAIM' DO NOTHING
                 """, orderId, now, now);
+    }
+
+    /**
+     * 클레임 완료의 부분 복원 예약(gateway#320). 클레임 COMPLETED 전이와 같은 트랜잭션에 합류한다 — 복원 호출이
+     * 실패하거나 그 전에 파드가 죽어도 행이 남아 스케줄러가 이어받는다. 같은 클레임은 한 행뿐이다.
+     */
+    @Transactional
+    public void recordClaim(Long orderId, Long claimId) {
+        Timestamp now = Timestamp.valueOf(LocalDateTime.now());
+        jdbc.update("""
+                INSERT INTO inventory_compensations (order_id, kind, status, touched_at, created_at, claim_id)
+                VALUES (?, 'CLAIM', 'RESTORING', ?, ?, ?)
+                ON CONFLICT (claim_id) WHERE kind = 'CLAIM' DO NOTHING
+                """, orderId, now, now, claimId);
+    }
+
+    /** 클레임 완료 직후 즉시 처리용 — {@link #claimRefundForRestore} 와 같다. */
+    @Transactional
+    public List<Task> claimClaimForRestore(Long claimId) {
+        return jdbc.query("""
+                UPDATE inventory_compensations
+                   SET touched_at = ?
+                 WHERE claim_id = ? AND kind = 'CLAIM' AND status = 'RESTORING'
+                RETURNING id, order_id, kind, attempts, claim_id
+                """, InventoryCompensationStore::toTask, Timestamp.valueOf(LocalDateTime.now()), claimId);
     }
 
     /** 결제 확정이 실패한 직후, 그 시도의 행을 복원 대상으로 바꾼다. 얻지 못하면 비어 있다. */
@@ -83,7 +110,7 @@ public class InventoryCompensationStore {
                 UPDATE inventory_compensations
                    SET status = 'RESTORING', touched_at = ?
                  WHERE order_id = ? AND kind = 'PAYMENT' AND status = 'WATCHING'
-                RETURNING id, order_id, kind, attempts
+                RETURNING id, order_id, kind, attempts, claim_id
                 """, InventoryCompensationStore::toTask, Timestamp.valueOf(LocalDateTime.now()), orderId);
     }
 
@@ -94,7 +121,7 @@ public class InventoryCompensationStore {
                 UPDATE inventory_compensations
                    SET touched_at = ?
                  WHERE order_id = ? AND kind = 'REFUND' AND status = 'RESTORING'
-                RETURNING id, order_id, kind, attempts
+                RETURNING id, order_id, kind, attempts, claim_id
                 """, InventoryCompensationStore::toTask, Timestamp.valueOf(LocalDateTime.now()), orderId);
     }
 
@@ -119,7 +146,7 @@ public class InventoryCompensationStore {
                          ORDER BY touched_at
                          LIMIT ?
                            FOR UPDATE SKIP LOCKED)
-                RETURNING id, order_id, kind, attempts
+                RETURNING id, order_id, kind, attempts, claim_id
                 """, InventoryCompensationStore::toTask,
                 Timestamp.valueOf(now),
                 Timestamp.valueOf(now.minus(watchTimeout)),
@@ -147,6 +174,8 @@ public class InventoryCompensationStore {
     }
 
     private static Task toTask(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
-        return new Task(rs.getLong("id"), rs.getLong("order_id"), rs.getString("kind"), rs.getInt("attempts"));
+        long claimId = rs.getLong("claim_id");
+        return new Task(rs.getLong("id"), rs.getLong("order_id"), rs.getString("kind"), rs.getInt("attempts"),
+                rs.wasNull() ? null : claimId);
     }
 }

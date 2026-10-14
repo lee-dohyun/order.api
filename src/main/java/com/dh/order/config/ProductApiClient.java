@@ -20,6 +20,7 @@ import org.springframework.stereotype.Component;
 import com.dh.order.domain.OrderItem;
 import com.dh.order.service.OrderStateException;
 import com.dh.order.service.OutOfStockException;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -88,7 +89,7 @@ public class ProductApiClient {
      *         만들면 그 금액으로 결제가 확정되므로 0 으로 대신하지 않는다.
      */
     @CircuitBreaker(name = "productApi", fallbackMethod = "quoteShippingFallback")
-    public BigDecimal quoteShipping(List<ShippingQuoteItem> items) {
+    public ShippingQuote quoteShipping(List<ShippingQuoteItem> items) {
         try {
             String json = objectMapper.writeValueAsString(Map.of("items", items));
             HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/offers/shipping-quote"))
@@ -101,12 +102,16 @@ public class ProductApiClient {
                 log.warn("배송비 견적 조회 실패 (status={}, body={})", response.statusCode(), response.body());
                 throw new OrderStateException("order.catalogUnavailable");
             }
-            BigDecimal fee = objectMapper.readValue(response.body(), ShippingQuote.class).shippingFee();
+            ShippingQuote quote = objectMapper.readValue(response.body(), ShippingQuote.class);
+            BigDecimal fee = quote.shippingFee();
             if (fee == null || fee.signum() < 0) {
                 log.warn("배송비 견적 응답이 올바르지 않다 (body={})", response.body());
                 throw new OrderStateException("order.catalogUnavailable");
             }
-            return fee;
+            // 반품 배송비는 이 필드를 싣지 않는 product.api(배포 순서 역전)와도 동작해야 하므로 없으면 0 이다.
+            BigDecimal returnFee = quote.returnShippingFee() == null || quote.returnShippingFee().signum() < 0
+                    ? BigDecimal.ZERO : quote.returnShippingFee();
+            return new ShippingQuote(fee, returnFee);
         } catch (IOException e) {
             log.warn("상품 서비스 연결 실패 (배송비 견적, items={})", items, e);
             throw new OrderStateException("order.catalogUnavailable");
@@ -117,16 +122,65 @@ public class ProductApiClient {
         }
     }
 
-    public BigDecimal quoteShippingFallback(List<ShippingQuoteItem> items, Throwable t) {
+    public ShippingQuote quoteShippingFallback(List<ShippingQuoteItem> items, Throwable t) {
         log.warn("서킷브레이커/폴백 동작 - 상품 서비스 호출 불가 (배송비 견적, items={})", items, t);
         throw new OrderStateException("order.catalogUnavailable");
     }
 
-    /** 배송비 견적 요청의 한 줄 - 확정된 오퍼와 수량. 금액은 보내지 않는다(product.api 가 다시 읽는다). */
-    public record ShippingQuoteItem(Long offerId, int quantity) {
+    /**
+     * 배송비 견적 요청의 한 줄 - 확정된 오퍼와 수량. 주문 생성 때는 금액을 보내지 않는다(product.api 가 다시 읽는다).
+     * {@code unitPrice} 는 부분 취소·반품 뒤 남은 품목을 <b>주문 당시 단가</b>로 다시 계산할 때만 채운다(gateway#320).
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ShippingQuoteItem(Long offerId, int quantity, BigDecimal unitPrice) {
+
+        public ShippingQuoteItem(Long offerId, int quantity) {
+            this(offerId, quantity, null);
+        }
     }
 
-    private record ShippingQuote(BigDecimal shippingFee) {
+    /** 배송비와 반품 배송비(편도, gateway#320). */
+    public record ShippingQuote(BigDecimal shippingFee, BigDecimal returnShippingFee) {
+    }
+
+    /** 부분 복원 한 줄(gateway#320). */
+    public record PartialRestoreItem(Long variantId, int quantity) {
+    }
+
+    /**
+     * 클레임 품목만 재고에 되돌린다(gateway#320, product.api {@code /internal/inventory/restore-partial}).
+     * {@code claimKey} 가 같으면 product.api 가 한 번만 반영하므로 재시도는 안전하다.
+     *
+     * @throws OrderStateException 호출에 실패하면 — 호출자(보상기)가 행을 남겨 재시도한다
+     */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "restorePartialFallback")
+    public void restorePartial(Long orderId, String claimKey, List<PartialRestoreItem> items) {
+        try {
+            String json = objectMapper.writeValueAsString(Map.of("orderId", orderId, "claimKey", claimKey, "items", items));
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/inventory/restore-partial"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(2))
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                log.warn("부분 재고 복원 실패 (orderId={}, claimKey={}, status={}, body={})",
+                        orderId, claimKey, response.statusCode(), response.body());
+                throw new OrderStateException("order.inventoryUnavailable");
+            }
+        } catch (IOException e) {
+            log.warn("재고 서비스 연결 실패 (부분 복원, orderId={})", orderId, e);
+            throw new OrderStateException("order.inventoryUnavailable");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("재고 서비스 호출 중단 (부분 복원, orderId={})", orderId, e);
+            throw new OrderStateException("order.inventoryUnavailable");
+        }
+    }
+
+    public void restorePartialFallback(Long orderId, String claimKey, List<PartialRestoreItem> items, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 부분 재고 복원 불가 (orderId={}, claimKey={})", orderId, claimKey, t);
+        throw new OrderStateException("order.inventoryUnavailable");
     }
 
     private List<ResolvedOffer> fetchOffers(String param, List<Long> ids) {

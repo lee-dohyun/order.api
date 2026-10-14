@@ -58,7 +58,7 @@ class OrderCreationPricingTest {
         channelRepository = mock(com.dh.order.repository.ChannelRepository.class);
         when(orderRepository.save(any(Order.class))).thenAnswer(inv -> inv.getArgument(0));
         // 배송비는 따로 지정한 테스트 외에는 무료(0원)로 둔다 - 기존 금액 단언이 상품 금액만 보게 한다.
-        when(productApiClient.quoteShipping(anyList())).thenReturn(BigDecimal.ZERO);
+        when(productApiClient.quoteShipping(anyList())).thenReturn(new ProductApiClient.ShippingQuote(BigDecimal.ZERO, BigDecimal.ZERO));
 
         com.dh.order.domain.Channel channel = new com.dh.order.domain.Channel("종합몰", "posselect.com");
         org.springframework.test.util.ReflectionTestUtils.setField(channel, "id", 1L);
@@ -75,7 +75,8 @@ class OrderCreationPricingTest {
                 mock(OrderPaymentFinalizer.class),
                 mock(InventoryCompensationStore.class),
                 mock(InventoryCompensator.class),
-                authApiClient);
+                authApiClient,
+                mock(com.dh.order.claim.OrderClaimRepository.class));
     }
 
     // ------------------------------------------------------------------ variantId(호환) 경로
@@ -311,7 +312,7 @@ class OrderCreationPricingTest {
     @Test
     void 배송비가_결제_금액에_더해지고_주문에_남는다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
-        when(productApiClient.quoteShipping(anyList())).thenReturn(new BigDecimal("3000"));
+        when(productApiClient.quoteShipping(anyList())).thenReturn(new ProductApiClient.ShippingQuote(new BigDecimal("3000"), BigDecimal.ZERO));
 
         OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 게스트(), null);
 
@@ -324,7 +325,7 @@ class OrderCreationPricingTest {
     void 등급_할인은_상품_금액에만_적용되고_배송비는_깎지_않는다() {
         대표오퍼를_돌려주도록(SKU, 카탈로그_가격, true);
         등급을_돌려주도록("GOLD", "5.00");
-        when(productApiClient.quoteShipping(anyList())).thenReturn(new BigDecimal("3000"));
+        when(productApiClient.quoteShipping(anyList())).thenReturn(new ProductApiClient.ShippingQuote(new BigDecimal("3000"), BigDecimal.ZERO));
 
         OrderResponse response = orderService.createOrder(1L, 주문요청(SKU, 2), 회원(), null);
 

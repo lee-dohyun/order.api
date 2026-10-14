@@ -6,6 +6,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -36,6 +37,7 @@ public class InventoryCompensator {
     private final Duration retryDelay;
     private final Duration maxRetryDelay;
     private final int batchSize;
+    private final JdbcTemplate jdbc;
 
     public InventoryCompensator(
             InventoryCompensationStore store,
@@ -44,7 +46,8 @@ public class InventoryCompensator {
             @Value("${app.inventory-compensation.watch-timeout:5m}") Duration watchTimeout,
             @Value("${app.inventory-compensation.retry-delay:1m}") Duration retryDelay,
             @Value("${app.inventory-compensation.max-retry-delay:1h}") Duration maxRetryDelay,
-            @Value("${app.inventory-compensation.batch-size:20}") int batchSize) {
+            @Value("${app.inventory-compensation.batch-size:20}") int batchSize,
+            JdbcTemplate jdbc) {
         this.store = store;
         this.orderRepository = orderRepository;
         this.productApiClient = productApiClient;
@@ -52,6 +55,7 @@ public class InventoryCompensator {
         this.retryDelay = retryDelay;
         this.maxRetryDelay = maxRetryDelay;
         this.batchSize = batchSize;
+        this.jdbc = jdbc;
     }
 
     /**
@@ -72,6 +76,15 @@ public class InventoryCompensator {
             store.claimRefundForRestore(orderId).forEach(this::process);
         } catch (RuntimeException e) {
             log.error("환불 재고 복원을 즉시 처리하지 못했다 - 스케줄러가 재시도한다 (orderId={})", orderId, e);
+        }
+    }
+
+    /** 클레임 완료 커밋 직후의 부분 복원(gateway#320). 예외를 던지지 않는다 — 환불은 이미 확정됐다. */
+    public void restoreClaimNow(Long claimId) {
+        try {
+            store.claimClaimForRestore(claimId).forEach(this::process);
+        } catch (RuntimeException e) {
+            log.error("클레임 재고 복원을 즉시 처리하지 못했다 - 스케줄러가 재시도한다 (claimId={})", claimId, e);
         }
     }
 
@@ -104,7 +117,12 @@ public class InventoryCompensator {
                 store.markDone(task.id());
                 return;
             }
-            productApiClient.restoreInventory(task.orderId(), toItems(order));
+            if (InventoryCompensationStore.CLAIM.equals(task.kind())) {
+                // 클레임 품목만, 클레임 키로 멱등하게(gateway#320). 주문 전체 복원과 섞으면 다른 품목까지 되돌린다.
+                productApiClient.restorePartial(task.orderId(), "claim-" + task.claimId(), claimItems(task.claimId()));
+            } else {
+                productApiClient.restoreInventory(task.orderId(), toItems(order));
+            }
             store.markDone(task.id());
             log.info("재고 복원 완료 (orderId={}, kind={}, 이전 실패 {}회)", task.orderId(), task.kind(), task.attempts());
         } catch (RuntimeException e) {
@@ -124,11 +142,19 @@ public class InventoryCompensator {
         return status != OrderStatus.CREATED && status != OrderStatus.CANCELLED;
     }
 
+    private List<ProductApiClient.PartialRestoreItem> claimItems(Long claimId) {
+        return jdbc.query("""
+                SELECT oi.variant_id, ci.quantity FROM order_claim_items ci
+                  JOIN order_items oi ON oi.id = ci.order_item_id
+                 WHERE ci.claim_id = ?
+                """, (rs, n) -> new ProductApiClient.PartialRestoreItem(rs.getLong(1), rs.getInt(2)), claimId);
+    }
+
     private static List<OrderItemResponse> toItems(Order order) {
         return order.getItems().stream()
                 .map(i -> new OrderItemResponse(
                         i.getProductId(), i.getVariantId(), i.getProductName(), i.getPrice(), i.getQuantity(),
-                        i.getSellerId(), i.getSellerName(), i.getOfferId()))
+                        i.getSellerId(), i.getSellerName(), i.getOfferId(), i.getId(), i.getClaimedQuantity()))
                 .toList();
     }
 }
