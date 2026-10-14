@@ -303,4 +303,114 @@ class ClaimFlowIntegrationTest {
         assertThat(refundedTotal()).isEqualByComparingTo("49000");
         assertThat(orderStatus()).isEqualTo("REFUNDED");
     }
+
+    // ------------------------------------------------------------------ 교환 (gateway#320)
+
+    private void variantsOfB() {
+        given(productApiClient.listVariants(102L)).willReturn(List.of(
+                new ProductApiClient.VariantOption(102L, new BigDecimal("20000"), true, 5, "기본"),
+                new ProductApiClient.VariantOption(202L, new BigDecimal("20000"), true, 3, "블랙 / L"),
+                new ProductApiClient.VariantOption(203L, new BigDecimal("25000"), true, 3, "골드"),
+                new ProductApiClient.VariantOption(204L, new BigDecimal("20000"), true, 0, "품절 옵션")));
+    }
+
+    private static ClaimCreateRequest exchange(ClaimReason reason, long itemId, long variantId) {
+        return new ClaimCreateRequest(ClaimType.EXCHANGE, reason, "색상이 달라요", List.of(new ClaimItemRequest(itemId, 1, variantId)));
+    }
+
+    @Test
+    @DisplayName("교환: 신청 → 승인(새 옵션 차감·회수품 복원, 환불 없음) → 교환 운송장 등록으로 완료")
+    void exchangeFlow() {
+        order("DELIVERED", LocalDateTime.now().minusDays(1));
+        variantsOfB();
+
+        ClaimResponse requested = claimService.request(orderId, ME, exchange(ClaimReason.WRONG_ITEM, itemB, 202L), null);
+        assertThat(requested.status()).isEqualTo("REQUESTED");
+        assertThat(requested.items().get(0).exchangeOptionLabel()).isEqualTo("블랙 / L");
+
+        ClaimResponse approved = claimService.approve(requested.id(), null);
+        assertThat(approved.status()).isEqualTo("APPROVED");
+        assertThat(approved.refundAmount()).isEqualByComparingTo("0");
+        verify(productApiClient).deductForClaim(orderId, "claim-" + requested.id() + "-out",
+                List.of(new ProductApiClient.PartialRestoreItem(202L, 1)));
+        verify(productApiClient).restorePartial(orderId, "claim-" + requested.id(),
+                List.of(new ProductApiClient.PartialRestoreItem(102L, 1)));
+        assertThat(refundedTotal()).isEqualByComparingTo("0");
+
+        ClaimResponse shipped = claimService.shipExchange(requested.id(), "CJ대한통운", "999");
+        assertThat(shipped.status()).isEqualTo("COMPLETED");
+        assertThat(shipped.exchangeTrackingNumber()).isEqualTo("999");
+        assertThat(orderStatus()).isEqualTo("DELIVERED");
+    }
+
+    @Test
+    @DisplayName("교환은 단순 변심을 받지 않는다 — 실결제 전이라 왕복 배송비를 받을 수 없다")
+    void exchangeChangeOfMindRejected() {
+        order("DELIVERED", LocalDateTime.now().minusDays(1));
+        variantsOfB();
+
+        assertThatThrownBy(() -> claimService.request(orderId, ME, exchange(ClaimReason.CHANGE_OF_MIND, itemB, 202L), null))
+                .isInstanceOf(OrderStateException.class).hasMessage("order.exchangeReasonNotAllowed");
+        assertThat(claimed(itemB)).isZero();
+    }
+
+    @Test
+    @DisplayName("가격이 다른 옵션·없는 옵션·품절 옵션으로는 교환할 수 없다")
+    void exchangeOptionMustMatch() {
+        order("DELIVERED", LocalDateTime.now().minusDays(1));
+        variantsOfB();
+
+        assertThatThrownBy(() -> claimService.request(orderId, ME, exchange(ClaimReason.DEFECTIVE, itemB, 203L), null))
+                .isInstanceOf(OrderStateException.class).hasMessage("order.exchangeOptionInvalid");
+        assertThatThrownBy(() -> claimService.request(orderId, ME, exchange(ClaimReason.DEFECTIVE, itemB, 999L), null))
+                .isInstanceOf(OrderStateException.class).hasMessage("order.exchangeOptionInvalid");
+        assertThatThrownBy(() -> claimService.request(orderId, ME, exchange(ClaimReason.DEFECTIVE, itemB, 204L), null))
+                .isInstanceOf(OrderStateException.class).hasMessage("order.exchangeOutOfStock");
+    }
+
+    @Test
+    @DisplayName("교환 가능 옵션: 같은 가격·판매 중·재고 있는 것만, 같은 옵션 재발송 포함")
+    void exchangeOptions() {
+        order("DELIVERED", LocalDateTime.now().minusDays(1));
+        variantsOfB();
+        given(productApiClient.listVariants(101L)).willReturn(List.of());
+
+        var options = claimService.exchangeOptions(orderId, ME).stream()
+                .filter(o -> o.orderItemId() == itemB).findFirst().orElseThrow().options();
+
+        assertThat(options).extracting(ClaimDtos.ExchangeOption::variantId).containsExactly(102L, 202L);
+    }
+
+    @Test
+    @DisplayName("교환한 상품은 남은 상품 금액에 그대로 있다 — 이후 다른 상품 반품의 할인 안분이 교환에 흔들리지 않는다")
+    void returnAfterExchangeIgnoresExchange() {
+        order("DELIVERED", LocalDateTime.now().minusDays(1));
+        variantsOfB();
+        ClaimResponse ex = claimService.request(orderId, ME, exchange(ClaimReason.DEFECTIVE, itemB, 202L), null);
+        claimService.approve(ex.id(), null);
+        claimService.shipExchange(ex.id(), "CJ대한통운", "999");
+
+        ClaimResponse ret = claimService.approve(
+                claimService.request(orderId, ME, returning(ClaimReason.DEFECTIVE, itemA), null).id(), null);
+
+        // A 30,000 반품, B(교환됨) 20,000 이 남는다 → 할인 몫 1,000 − ⌊1,000×20,000/50,000⌋ = 600
+        assertThat(ret.discountShare()).isEqualByComparingTo("600");
+        assertThat(ret.refundAmount()).isEqualByComparingTo("29400");
+        assertThat(orderStatus()).isEqualTo("DELIVERED");
+    }
+
+    @Test
+    @DisplayName("교환 재고가 부족하면 승인되지 않고 신청은 처리 대기로 남는다")
+    void exchangeApproveOutOfStock() {
+        order("DELIVERED", LocalDateTime.now().minusDays(1));
+        variantsOfB();
+        ClaimResponse requested = claimService.request(orderId, ME, exchange(ClaimReason.DEFECTIVE, itemB, 202L), null);
+        org.mockito.BDDMockito.willThrow(new com.dh.order.service.ExchangeOutOfStockException())
+                .given(productApiClient).deductForClaim(anyLong(), org.mockito.ArgumentMatchers.anyString(), anyList());
+
+        assertThatThrownBy(() -> claimService.approve(requested.id(), null))
+                .isInstanceOf(OrderStateException.class).hasMessage("order.exchangeOutOfStock");
+        assertThat(jdbc.queryForObject("SELECT status FROM order_claims WHERE id = ?", String.class, requested.id()))
+                .isEqualTo("REQUESTED");
+    }
 }

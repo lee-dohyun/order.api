@@ -77,6 +77,15 @@ public class OrderClaim {
     @Column(name = "refund_amount", precision = 12, scale = 2)
     private BigDecimal refundAmount;
 
+    @Column(name = "exchange_carrier", length = 50)
+    private String exchangeCarrier;
+
+    @Column(name = "exchange_tracking_number", length = 50)
+    private String exchangeTrackingNumber;
+
+    @Column(name = "exchange_shipped_at")
+    private LocalDateTime exchangeShippedAt;
+
     @Column(name = "reject_reason", length = 300)
     private String rejectReason;
 
@@ -97,6 +106,11 @@ public class OrderClaim {
     public void addItem(OrderClaimItem item) {
         item.setClaim(this);
         items.add(item);
+    }
+
+    /** 상품이 고객에게서 돌아오고 돈을 돌려주는 클레임(취소·반품). 교환은 상품이 바뀔 뿐 남은 상품 금액을 줄이지 않는다. */
+    public boolean isRefundType() {
+        return type == ClaimType.CANCEL || type == ClaimType.RETURN;
     }
 
     /** 고객 사유 — 배송비 재계산 대상. 취소는 언제나 고객 사유다. */

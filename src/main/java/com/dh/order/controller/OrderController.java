@@ -111,6 +111,27 @@ public class OrderController {
                 .body(claimService.request(id, requester, request, blankToNull(idempotencyKey)));
     }
 
+    /** 고객: 품목별 교환 가능 옵션(같은 상품·같은 가격·판매 중·재고 있음, gateway#320). 소유자 아니면 404. */
+    @GetMapping("/{id}/exchange-options")
+    public ResponseEntity<List<com.dh.order.claim.ClaimDtos.ExchangeOptions>> exchangeOptions(
+            @PathVariable Long id,
+            @RequestHeader(value = GUEST_TOKEN_HEADER, required = false) String guestToken,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        return ResponseEntity.ok(claimService.exchangeOptions(id, extractRequester(authHeader, guestToken)));
+    }
+
+    /** 관리자: 교환 운송장 등록 → 교환 완료(gateway#320). */
+    @PostMapping("/claims/{claimId}/exchange-shipment")
+    public ResponseEntity<com.dh.order.claim.ClaimDtos.ClaimResponse> shipExchange(
+            @PathVariable Long claimId,
+            @jakarta.validation.Valid @RequestBody com.dh.order.claim.ClaimDtos.ExchangeShipmentRequest request,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (verifyAdmin(authHeader) == null) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(claimService.shipExchange(claimId, request.carrier(), request.trackingNumber()));
+    }
+
     /** 관리자: 상태별 신청 목록(기본은 처리 대기). */
     @GetMapping("/claims")
     public ResponseEntity<List<com.dh.order.claim.ClaimDtos.ClaimResponse>> listClaims(

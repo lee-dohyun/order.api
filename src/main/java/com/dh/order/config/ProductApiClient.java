@@ -143,6 +143,102 @@ public class ProductApiClient {
     public record ShippingQuote(BigDecimal shippingFee, BigDecimal returnShippingFee) {
     }
 
+    /** 상품 옵션(variant) 하나 — 교환 옵션 판정용(gateway#320). {@code label} 은 옵션 값들을 " / " 로 이은 것. */
+    public record VariantOption(Long variantId, BigDecimal price, boolean active, Integer stockQuantity, String label) {
+    }
+
+    private record VariantPayload(Long id, BigDecimal price, boolean active, Integer stockQuantity,
+            List<Map<String, Object>> optionValues) {
+    }
+
+    /**
+     * 상품의 옵션 목록(product.api 공개 경로 {@code GET /api/products/{id}/variants}). 숨김·판매 중지 상품이면
+     * product.api 가 404 를 주므로 빈 목록이다 — 교환할 수 없다는 뜻이다.
+     */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "listVariantsFallback")
+    public List<VariantOption> listVariants(Long productId) {
+        URI uri = URI.create(baseUrl + "/api/products/" + productId + "/variants");
+        try {
+            HttpResponse<String> response = httpClient.send(
+                    HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(2)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 404) {
+                return List.of();
+            }
+            if (response.statusCode() >= 400) {
+                log.warn("옵션 목록 조회 실패 (productId={}, status={})", productId, response.statusCode());
+                throw new OrderStateException("order.catalogUnavailable");
+            }
+            return objectMapper.readValue(response.body(), new TypeReference<List<VariantPayload>>() {
+            }).stream()
+                    .map(v -> new VariantOption(v.id(), v.price(), v.active(), v.stockQuantity(), label(v.optionValues())))
+                    .toList();
+        } catch (IOException e) {
+            log.warn("상품 서비스 연결 실패 (옵션 목록, productId={})", productId, e);
+            throw new OrderStateException("order.catalogUnavailable");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new OrderStateException("order.catalogUnavailable");
+        }
+    }
+
+    public List<VariantOption> listVariantsFallback(Long productId, Throwable t) {
+        log.warn("서킷브레이커/폴백 동작 - 옵션 목록 조회 불가 (productId={})", productId, t);
+        throw new OrderStateException("order.catalogUnavailable");
+    }
+
+    /** 옵션 값들을 "블랙 / L" 처럼 잇는다. 값이 없는 단일 옵션 상품은 "기본". */
+    private static String label(List<Map<String, Object>> optionValues) {
+        if (optionValues == null || optionValues.isEmpty()) {
+            return "기본";
+        }
+        return optionValues.stream()
+                .map(v -> String.valueOf(v.getOrDefault("value", "")))
+                .filter(s -> !s.isBlank())
+                .collect(Collectors.joining(" / "));
+    }
+
+    /**
+     * 교환 발송분 재고 차감(gateway#320, product.api {@code /internal/inventory/deduct-claim}). 같은 키는 한 번만 빠진다.
+     *
+     * @throws OrderStateException 재고가 부족하면 {@code order.exchangeOutOfStock}, 그 밖의 실패는 재고 확인 실패
+     */
+    @CircuitBreaker(name = "productApi", fallbackMethod = "deductForClaimFallback")
+    public void deductForClaim(Long orderId, String claimKey, List<PartialRestoreItem> items) {
+        try {
+            String json = objectMapper.writeValueAsString(Map.of("orderId", orderId, "claimKey", claimKey, "items", items));
+            HttpResponse<String> response = httpClient.send(
+                    HttpRequest.newBuilder(URI.create(baseUrl + "/internal/inventory/deduct-claim"))
+                            .header("Content-Type", "application/json")
+                            .timeout(Duration.ofSeconds(2))
+                            .POST(HttpRequest.BodyPublishers.ofString(json))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 409) {
+                log.info("교환 옵션 재고 부족 (orderId={}, claimKey={}, body={})", orderId, claimKey, response.body());
+                throw new com.dh.order.service.ExchangeOutOfStockException();
+            }
+            if (response.statusCode() >= 400) {
+                log.warn("교환 차감 실패 (orderId={}, status={}, body={})", orderId, response.statusCode(), response.body());
+                throw new OrderStateException("order.inventoryUnavailable");
+            }
+        } catch (IOException e) {
+            log.warn("재고 서비스 연결 실패 (교환 차감, orderId={})", orderId, e);
+            throw new OrderStateException("order.inventoryUnavailable");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new OrderStateException("order.inventoryUnavailable");
+        }
+    }
+
+    public void deductForClaimFallback(Long orderId, String claimKey, List<PartialRestoreItem> items, Throwable t) {
+        if (t instanceof com.dh.order.service.ExchangeOutOfStockException e) {
+            throw e;
+        }
+        log.warn("서킷브레이커/폴백 동작 - 교환 차감 불가 (orderId={})", orderId, t);
+        throw new OrderStateException("order.inventoryUnavailable");
+    }
+
     /** 부분 복원 한 줄(gateway#320). */
     public record PartialRestoreItem(Long variantId, int quantity) {
     }

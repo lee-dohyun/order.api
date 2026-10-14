@@ -65,9 +65,12 @@ public class ClaimService {
                 return replay.get();
             }
         }
+        Map<Long, String> exchangeLabels = request.type() == ClaimType.EXCHANGE
+                ? validateExchange(orderId, requester, request)
+                : Map.of();
         ClaimCommitter.Created created;
         try {
-            created = committer.create(orderId, requester, request, idempotencyKey);
+            created = committer.create(orderId, requester, request, idempotencyKey, exchangeLabels);
         } catch (DataIntegrityViolationException e) {
             // 같은 키의 동시 재시도가 유니크 인덱스(V12)에 진 경우.
             if (idempotencyKey == null) {
@@ -81,10 +84,104 @@ public class ClaimService {
         return get(created.claimId());
     }
 
-    /** 관리자 승인 — 사유를 바꿀 수 있다. 환불·재고 복원까지 끝낸다. */
+    /**
+     * 관리자 승인 — 사유를 바꿀 수 있다. 취소·반품은 환불·재고 복원까지, 교환은 새 옵션 재고 차감과 회수품 복원까지
+     * 끝내고 교환 운송장 등록을 기다린다.
+     */
     public ClaimResponse approve(Long claimId, ClaimReason overrideReason) {
-        complete(claimId, overrideReason);
+        OrderClaim claim = claimRepository.findByIdWithItems(claimId)
+                .orElseThrow(() -> new NoSuchElementException("claim not found: " + claimId));
+        if (claim.getType() == ClaimType.EXCHANGE) {
+            approveExchange(claim, overrideReason);
+        } else {
+            complete(claimId, overrideReason);
+        }
         return get(claimId);
+    }
+
+    /** 교환 운송장 등록 → 교환 완료(gateway#320). */
+    public ClaimResponse shipExchange(Long claimId, String carrier, String trackingNumber) {
+        committer.shipExchange(claimId, carrier, trackingNumber);
+        return get(claimId);
+    }
+
+    /**
+     * 품목별 교환 가능 옵션 — 같은 상품, 같은 가격, 판매 중, 재고 있음(같은 옵션 재발송 포함). 소유자가 아니면 404.
+     * 아직 신청하지 않은 수량이 있는 품목만 담는다.
+     */
+    public List<ClaimDtos.ExchangeOptions> exchangeOptions(Long orderId, Requester requester) {
+        Order order = loadOwned(orderId, requester);
+        Map<Long, List<ProductApiClient.VariantOption>> byProduct = new HashMap<>();
+        List<ClaimDtos.ExchangeOptions> result = new ArrayList<>();
+        for (OrderItem item : order.getItems()) {
+            if (item.getQuantity() - item.getClaimedQuantity() <= 0) {
+                continue;
+            }
+            List<ClaimDtos.ExchangeOption> options = byProduct
+                    .computeIfAbsent(item.getProductId(), productApiClient::listVariants).stream()
+                    .filter(v -> exchangeable(v, item))
+                    .map(v -> new ClaimDtos.ExchangeOption(v.variantId(), v.label(), v.stockQuantity()))
+                    .toList();
+            result.add(new ClaimDtos.ExchangeOptions(item.getId(), item.getProductName(), options));
+        }
+        return result;
+    }
+
+    private static boolean exchangeable(ProductApiClient.VariantOption v, OrderItem item) {
+        return v.active() && v.price() != null && v.price().compareTo(item.getPrice()) == 0
+                && v.stockQuantity() != null && v.stockQuantity() > 0;
+    }
+
+    /** 교환 신청의 옵션을 product.api 로 확인하고 품목별 표시 이름을 돌려준다. 조회 전에 소유자를 먼저 본다. */
+    private Map<Long, String> validateExchange(Long orderId, Requester requester, ClaimCreateRequest request) {
+        ClaimCommitter.checkExchangeReason(request.reasonType());
+        Order order = loadOwned(orderId, requester);
+        Map<Long, OrderItem> items = new HashMap<>();
+        order.getItems().forEach(i -> items.put(i.getId(), i));
+        Map<Long, List<ProductApiClient.VariantOption>> byProduct = new HashMap<>();
+        Map<Long, String> labels = new HashMap<>();
+        for (ClaimDtos.ClaimItemRequest line : request.items()) {
+            OrderItem item = items.get(line.orderItemId());
+            if (item == null) {
+                throw new OrderStateException("order.claimItemInvalid");
+            }
+            ProductApiClient.VariantOption option = byProduct
+                    .computeIfAbsent(item.getProductId(), productApiClient::listVariants).stream()
+                    .filter(v -> v.variantId().equals(line.exchangeVariantId()))
+                    .findFirst()
+                    .filter(v -> v.active() && v.price() != null && v.price().compareTo(item.getPrice()) == 0)
+                    .orElseThrow(() -> new OrderStateException("order.exchangeOptionInvalid"));
+            if (option.stockQuantity() == null || option.stockQuantity() < line.quantity()) {
+                throw new com.dh.order.service.ExchangeOutOfStockException();
+            }
+            labels.put(line.orderItemId(), option.label());
+        }
+        return labels;
+    }
+
+    private Order loadOwned(Long orderId, Requester requester) {
+        return orderRepository.findByIdWithItems(orderId)
+                .filter(o -> requester.admin()
+                        || o.isAccessibleBy(requester.userId(), requester.userEmail(), requester.guestToken()))
+                .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
+    }
+
+    /**
+     * 교환 승인: 새 옵션 재고를 클레임 키로 먼저 뺀다(원격, 같은 키 재시도는 한 번만). 그다음 상태를 확정하고 회수품을
+     * 복원한다. 차감 뒤 확정 전에 실패하면 차감만 남는데, 같은 승인을 다시 누르면 차감은 건너뛰고 확정된다.
+     */
+    private void approveExchange(OrderClaim claim, ClaimReason overrideReason) {
+        if (claim.getStatus() != ClaimStatus.REQUESTED) {
+            throw new OrderStateException("order.claimAlreadyDecided");
+        }
+        ClaimReason reason = overrideReason != null ? overrideReason : claim.getReasonType();
+        ClaimCommitter.checkExchangeReason(reason);
+        productApiClient.deductForClaim(claim.getOrder().getId(), "claim-" + claim.getId() + "-out",
+                claim.getItems().stream()
+                        .map(i -> new ProductApiClient.PartialRestoreItem(i.getExchangeVariantId(), i.getQuantity()))
+                        .toList());
+        committer.approveExchange(claim.getId(), reason);
+        compensator.restoreClaimNow(claim.getId());
     }
 
     public ClaimResponse reject(Long claimId, String reason) {
@@ -129,7 +226,7 @@ public class ClaimService {
             }
             ClaimReason reason = overrideReason != null ? overrideReason : claim.getReasonType();
             List<OrderClaim> completed = claimRepository.findByOrderIdWithItems(claim.getOrder().getId()).stream()
-                    .filter(c -> c.getStatus() == ClaimStatus.COMPLETED).toList();
+                    .filter(c -> c.getStatus() == ClaimStatus.COMPLETED && c.isRefundType()).toList();
             ClaimRefundCalculator.Result amounts = calculate(claim, reason, completed);
             if (committer.complete(claimId, reason, completed.size(), amounts)) {
                 compensator.restoreClaimNow(claimId);
