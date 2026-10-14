@@ -291,4 +291,74 @@ class OrderServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("환불할 수 없는 주문 상태입니다");
     }
+
+    // ------------------------------------------------------------------ 고객 주문 상세·목록 (gateway#321)
+
+    @Test
+    void getOrder_ShouldIncludeShipment_WhenTrackingNumberIsRegistered() {
+        order.setCustomerId("member-1");
+        order.setStatus(OrderStatus.SHIPPED);
+        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        Shipment shipment = new Shipment(order, "CJ대한통운", "123456789012");
+        given(shipmentRepository.findByOrderId(1L)).willReturn(Optional.of(shipment));
+
+        OrderResponse response = orderService.getOrder(1L, Requester.of("member-1", null, null, false));
+
+        assertThat(response.shipment()).isNotNull();
+        assertThat(response.shipment().carrier()).isEqualTo("CJ대한통운");
+        assertThat(response.shipment().trackingNumber()).isEqualTo("123456789012");
+        assertThat(response.shipment().status()).isEqualTo("SHIPPED");
+    }
+
+    @Test
+    void getOrder_ShouldHaveNoShipment_BeforeTrackingNumberIsRegistered() {
+        order.setCustomerId("member-1");
+        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        given(shipmentRepository.findByOrderId(1L)).willReturn(Optional.empty());
+
+        assertThat(orderService.getOrder(1L, Requester.of("member-1", null, null, false)).shipment()).isNull();
+    }
+
+    @Test
+    void getOrder_ShouldHideOthersOrderAs404_EvenWithShipment() {
+        order.setCustomerId("member-1");
+        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+
+        assertThatThrownBy(() -> orderService.getOrder(1L, Requester.of("member-2", null, null, false)))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+        verifyNoInteractions(shipmentRepository);
+    }
+
+    /** 한국 날짜 10/1~10/31 은 UTC 9/30 15:00 이상 ~ 10/31 15:00 미만이다 — 파드가 UTC 로 주문 시각을 저장한다. */
+    @Test
+    void getMyOrders_ShouldConvertKstDatesToUtcHalfOpenRange() {
+        given(orderRepository.findMineBetween(eq("member-1"), eq(null), any(), any(), any())).willReturn(java.util.List.of());
+
+        orderService.getMyOrders("member-1", null,
+                java.time.LocalDate.of(2026, 10, 1), java.time.LocalDate.of(2026, 10, 31), 0, 20);
+
+        verify(orderRepository).findMineBetween("member-1", null,
+                java.time.LocalDateTime.of(2026, 9, 30, 15, 0), java.time.LocalDateTime.of(2026, 10, 31, 15, 0),
+                org.springframework.data.domain.PageRequest.of(0, 20));
+    }
+
+    @Test
+    void getMyOrders_ShouldReturnEverything_WhenNoFilterIsGiven() {
+        given(orderRepository.findMineBetween(any(), any(), any(), any(), any())).willReturn(java.util.List.of(order));
+
+        assertThat(orderService.getMyOrders("member-1", null, null, null, null, null)).hasSize(1);
+
+        verify(orderRepository).findMineBetween(eq("member-1"), eq(null), any(), any(),
+                eq(org.springframework.data.domain.Pageable.unpaged()));
+    }
+
+    @Test
+    void getMyOrders_ShouldCapPageSize() {
+        given(orderRepository.findMineBetween(any(), any(), any(), any(), any())).willReturn(java.util.List.of());
+
+        orderService.getMyOrders("member-1", null, null, null, 0, 10_000);
+
+        verify(orderRepository).findMineBetween(eq("member-1"), eq(null), any(), any(),
+                eq(org.springframework.data.domain.PageRequest.of(0, 100)));
+    }
 }

@@ -97,6 +97,8 @@ public class OrderDtos {
             BigDecimal subtotalPrice,
             BigDecimal discountAmount,
             BigDecimal shippingFee,
+            /** 택배사·운송장·배송 상태(gateway#321). 운송장 등록 전에는 null. */
+            ShipmentResponse shipment,
             String gradeCode,
             BigDecimal gradeDiscountRate,
             List<OrderItemResponse> items,

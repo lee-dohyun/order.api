@@ -5,6 +5,10 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.HashMap;
@@ -19,6 +23,8 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -305,11 +311,30 @@ public class OrderService {
         return toResponse(loadAccessible(id, requester), null);
     }
 
-    public List<OrderSummaryResponse> getMyOrders(String customerId, String customerEmail) {
-        return orderRepository.findMine(customerId, customerEmail).stream()
+    /**
+     * 내 주문 목록(gateway#321). {@code from}/{@code to} 는 고객이 고른 <b>한국 날짜</b>이고 양 끝을 포함한다.
+     * 주문 시각은 파드 시간대(UTC)로 저장되므로 날짜 경계를 KST 자정 → UTC 로 바꿔 비교한다 — 그대로 비교하면
+     * 하루 경계의 주문이 9시간만큼 다른 날로 들어간다. 둘 다 비면 전체, {@code page}/{@code size} 가 비면 전부다
+     * (이 파라미터가 생기기 전 호출자와 같은 결과).
+     */
+    public List<OrderSummaryResponse> getMyOrders(String customerId, String customerEmail,
+            LocalDate from, LocalDate to, Integer page, Integer size) {
+        LocalDateTime start = from == null ? LocalDateTime.of(1970, 1, 1, 0, 0) : startOfKstDayInUtc(from);
+        LocalDateTime end = to == null ? LocalDateTime.of(9999, 1, 1, 0, 0) : startOfKstDayInUtc(to.plusDays(1));
+        Pageable pageable = page == null || size == null
+                ? Pageable.unpaged()
+                : PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_MY_ORDERS_PAGE_SIZE));
+        return orderRepository.findMineBetween(customerId, customerEmail, start, end, pageable).stream()
                 .map(o -> new OrderSummaryResponse(o.getId(), o.getStatus().name(), o.getTotalPrice(),
                         o.getItems().size(), o.getCreatedAt()))
                 .toList();
+    }
+
+    private static final int MAX_MY_ORDERS_PAGE_SIZE = 100;
+    private static final ZoneId SHOP_ZONE = ZoneId.of("Asia/Seoul");
+
+    private static LocalDateTime startOfKstDayInUtc(LocalDate date) {
+        return date.atStartOfDay(SHOP_ZONE).withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
     }
 
     public List<OrderAdminSummaryResponse> getAllOrders() {
@@ -562,6 +587,8 @@ public class OrderService {
                 order.getTotalPrice().add(order.getDiscountAmount()).subtract(order.getShippingFee()),
                 order.getDiscountAmount(),
                 order.getShippingFee(),
+                // 배송 정보(gateway#321). 운송장이 등록되기 전(결제 대기·결제 완료)에는 null 이다.
+                shipmentRepository.findByOrderId(order.getId()).map(this::toShipmentResponse).orElse(null),
                 order.getGradeCode(),
                 order.getGradeDiscountRate(),
                 items,
