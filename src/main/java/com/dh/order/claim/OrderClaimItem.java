@@ -38,6 +38,14 @@ public class OrderClaimItem {
     @Column(nullable = false)
     private Integer quantity;
 
+    /** 교환으로 보낼 옵션(같은 상품의 variant, gateway#320). 취소·반품은 null. */
+    @Column(name = "exchange_variant_id")
+    private Long exchangeVariantId;
+
+    /** 교환 옵션의 표시 이름 스냅샷(예: "블랙 / L"). */
+    @Column(name = "exchange_option_label", length = 200)
+    private String exchangeOptionLabel;
+
     public OrderClaimItem(OrderItem orderItem, int quantity) {
         this.orderItem = orderItem;
         this.quantity = quantity;

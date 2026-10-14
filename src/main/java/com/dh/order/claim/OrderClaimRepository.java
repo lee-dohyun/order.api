@@ -29,6 +29,8 @@ public interface OrderClaimRepository extends JpaRepository<OrderClaim, Long> {
     @Query("select c from OrderClaim c join fetch c.order where c.status = :status order by c.createdAt")
     List<OrderClaim> findByStatusWithOrder(@Param("status") ClaimStatus status);
 
-    @Query("select count(c) from OrderClaim c where c.order.id = :orderId and c.status = com.dh.order.claim.ClaimStatus.COMPLETED")
+    /** 완료된 취소·반품 수 — 금액 계산의 전제. 교환은 남은 상품 금액을 바꾸지 않아 세지 않는다. */
+    @Query("select count(c) from OrderClaim c where c.order.id = :orderId and c.status = com.dh.order.claim.ClaimStatus.COMPLETED"
+            + " and c.type in (com.dh.order.claim.ClaimType.CANCEL, com.dh.order.claim.ClaimType.RETURN)")
     long countCompleted(@Param("orderId") Long orderId);
 }

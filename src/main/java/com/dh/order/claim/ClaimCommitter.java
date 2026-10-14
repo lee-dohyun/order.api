@@ -70,6 +70,16 @@ public class ClaimCommitter {
      */
     @Transactional
     public Created create(Long orderId, Requester requester, ClaimCreateRequest request, String idempotencyKey) {
+        return create(orderId, requester, request, idempotencyKey, Map.of());
+    }
+
+    /**
+     * @param exchangeLabels 교환일 때 품목(orderItemId)별 교환 옵션 표시 이름. {@link ClaimService} 가 product.api 로
+     *        같은 상품·같은 가격·판매 중임을 확인한 옵션만 담아 넘긴다.
+     */
+    @Transactional
+    public Created create(Long orderId, Requester requester, ClaimCreateRequest request, String idempotencyKey,
+            Map<Long, String> exchangeLabels) {
         Order order = orderRepository.findByIdForUpdate(orderId)
                 .filter(o -> requester.admin() || o.isAccessibleBy(requester.userId(), requester.userEmail(), requester.guestToken()))
                 .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
@@ -91,6 +101,14 @@ public class ClaimCommitter {
                 throw new OrderStateException("order.claimNotAllowed");
             }
             reason = request.reasonType();
+            if (request.type() == ClaimType.EXCHANGE) {
+                checkExchangeReason(reason);
+                for (ClaimItemRequest line : request.items()) {
+                    if (line.exchangeVariantId() == null || !exchangeLabels.containsKey(line.orderItemId())) {
+                        throw new OrderStateException("order.exchangeOptionInvalid");
+                    }
+                }
+            }
         }
 
         boolean unpaidWholeCancel = false;
@@ -114,7 +132,12 @@ public class ClaimCommitter {
         claim.setIdempotencyKey(idempotencyKey);
         for (ClaimItemRequest line : request.items()) {
             reserve(orderId, line.orderItemId(), line.quantity());
-            claim.addItem(new OrderClaimItem(itemsById.get(line.orderItemId()), line.quantity()));
+            OrderClaimItem claimItem = new OrderClaimItem(itemsById.get(line.orderItemId()), line.quantity());
+            if (request.type() == ClaimType.EXCHANGE) {
+                claimItem.setExchangeVariantId(line.exchangeVariantId());
+                claimItem.setExchangeOptionLabel(exchangeLabels.get(line.orderItemId()));
+            }
+            claim.addItem(claimItem);
         }
         if (unpaidWholeCancel) {
             claim.setStatus(ClaimStatus.COMPLETED);
@@ -169,7 +192,7 @@ public class ClaimCommitter {
         // 모든 품목이 완료된 클레임으로 돌아갔으면 주문도 끝난다. 반려된 클레임은 수량을 이미 돌려놓았으므로
         // claimed_quantity 가 아니라 완료 클레임 수량으로 센다.
         List<OrderClaim> completed = claimRepository.findByOrderIdWithItems(order.getId()).stream()
-                .filter(c -> c.getStatus() == ClaimStatus.COMPLETED).toList();
+                .filter(c -> c.getStatus() == ClaimStatus.COMPLETED && c.isRefundType()).toList();
         int completedQty = completed.stream().flatMap(c -> c.getItems().stream()).mapToInt(OrderClaimItem::getQuantity).sum();
         int totalQty = order.getItems().stream().mapToInt(OrderItem::getQuantity).sum();
         if (completedQty == totalQty) {
@@ -179,6 +202,52 @@ public class ClaimCommitter {
         // 부분 복원 예약을 완료와 같은 트랜잭션에 넣는다 — 복원 호출이 실패해도 행이 남아 스케줄러가 이어받는다.
         compensationStore.recordClaim(order.getId(), claim.getId());
         return true;
+    }
+
+    /**
+     * 교환 승인(gateway#320). 새 옵션 재고 차감은 호출자가 이미 끝냈다(원격). 여기서는 상태를 APPROVED 로 바꾸고
+     * 회수품의 부분 복원 예약을 같은 트랜잭션에 남긴다. 환불은 없다.
+     */
+    @Transactional
+    public void approveExchange(Long claimId, ClaimReason finalReason) {
+        OrderClaim claim = claimRepository.findByIdWithItems(claimId)
+                .orElseThrow(() -> new NoSuchElementException("claim not found: " + claimId));
+        orderRepository.findByIdForUpdate(claim.getOrder().getId()).orElseThrow();
+        if (claim.getStatus() != ClaimStatus.REQUESTED || claim.getType() != ClaimType.EXCHANGE) {
+            throw new OrderStateException("order.claimAlreadyDecided");
+        }
+        checkExchangeReason(finalReason);
+        claim.setReasonType(finalReason);
+        claim.setStatus(ClaimStatus.APPROVED);
+        claim.setDecidedAt(LocalDateTime.now());
+        claim.setItemAmount(itemAmount(claim));
+        claim.setDiscountShare(BigDecimal.ZERO);
+        claim.setShippingRefund(BigDecimal.ZERO);
+        claim.setReturnShippingFee(BigDecimal.ZERO);
+        claim.setRefundAmount(BigDecimal.ZERO);
+        compensationStore.recordClaim(claim.getOrder().getId(), claim.getId());
+    }
+
+    /** 교환 운송장 등록 → 교환 완료. */
+    @Transactional
+    public void shipExchange(Long claimId, String carrier, String trackingNumber) {
+        OrderClaim claim = claimRepository.findByIdWithItems(claimId)
+                .orElseThrow(() -> new NoSuchElementException("claim not found: " + claimId));
+        orderRepository.findByIdForUpdate(claim.getOrder().getId()).orElseThrow();
+        if (claim.getStatus() != ClaimStatus.APPROVED) {
+            throw new OrderStateException("order.claimNotAllowed");
+        }
+        claim.setExchangeCarrier(carrier);
+        claim.setExchangeTrackingNumber(trackingNumber);
+        claim.setExchangeShippedAt(LocalDateTime.now());
+        claim.setStatus(ClaimStatus.COMPLETED);
+    }
+
+    /** 교환은 판매자 사유만 받는다(2026-10-14 결정 — 단순 변심 교환은 실결제 전까지 받지 않는다). */
+    static void checkExchangeReason(ClaimReason reason) {
+        if (reason != ClaimReason.DEFECTIVE && reason != ClaimReason.WRONG_ITEM) {
+            throw new OrderStateException("order.exchangeReasonNotAllowed");
+        }
     }
 
     /** 반려 — 잡아 둔 수량을 돌려놓는다. */
