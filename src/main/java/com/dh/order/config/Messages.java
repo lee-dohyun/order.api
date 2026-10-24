@@ -1,5 +1,7 @@
 package com.dh.order.config;
 
+import java.util.Locale;
+
 import org.springframework.context.MessageSource;
 import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.stereotype.Component;
@@ -19,5 +21,10 @@ public class Messages {
 
     public String get(String code, Object... args) {
         return messageSource.getMessage(code, args, LocaleContextHolder.getLocale());
+    }
+
+    /** 요청 로케일이 고객의 것이 아닐 때(관리자가 트리거하는 메일 등) 로케일을 직접 정해 꺼낸다. */
+    public String get(Locale locale, String code, Object... args) {
+        return messageSource.getMessage(code, args, locale);
     }
 }

@@ -61,10 +61,13 @@ public class OrderController {
     private final AdminJwtVerifier adminJwtVerifier;
     private final CustomerJwtVerifier customerJwtVerifier;
     private final InventoryCompensator inventoryCompensator;
+    private final com.dh.order.service.OrderNotificationService notificationService;
 
-    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier, 
+    public OrderController(OrderService orderService, AdminJwtVerifier adminJwtVerifier,
                            CustomerJwtVerifier customerJwtVerifier, InventoryCompensator inventoryCompensator,
-            com.dh.order.claim.ClaimService claimService) {
+            com.dh.order.claim.ClaimService claimService,
+            com.dh.order.service.OrderNotificationService notificationService) {
+        this.notificationService = notificationService;
         this.claimService = claimService;
         this.orderService = orderService;
         this.adminJwtVerifier = adminJwtVerifier;
@@ -236,7 +239,10 @@ public class OrderController {
         if (verifyAdmin(authHeader) == null) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createShipment(id, request));
+        ShipmentResponse response = orderService.createShipment(id, request);
+        // 운송장 등록이 커밋된 뒤에 보낸다. 메일 실패는 서비스가 흡수하고 notification_failures 에 남긴다(#44).
+        notificationService.notifyShipped(id, response.carrier(), response.trackingNumber());
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     // admin.front 전용 - 배송완료 처리, 주문 상태가 SHIPPED -> DELIVERED로 전이된다.
@@ -275,6 +281,9 @@ public class OrderController {
 
         // 2. 재고 복원 원격 호출 (트랜잭션 밖). 실패해도 예약 행이 남아 스케줄러가 재시도한다(#34).
         inventoryCompensator.restoreRefundNow(id);
+
+        // 3. 환불 안내 메일 (트랜잭션 밖, 실패해도 환불은 그대로)
+        notificationService.notifyRefunded(id, response.amount(), response.reason());
 
         return ResponseEntity.ok(response);
     }

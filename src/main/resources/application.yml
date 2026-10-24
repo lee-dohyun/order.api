@@ -22,7 +22,7 @@ spring:
   # 다국어 메시지(ko/en/zh/ja). fallback-to-system-locale을 끄지 않으면 지원하지 않는
   # 언어로 요청이 왔을 때 서버 JVM 로케일을 따라가버린다 — 항상 기본 번들(한국어)로 떨어뜨린다.
   messages:
-    basename: messages
+    basename: messages,mail_messages
     encoding: UTF-8
     fallback-to-system-locale: false
 
