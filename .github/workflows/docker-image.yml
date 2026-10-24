@@ -18,7 +18,7 @@ jobs:
       # ubuntu-latest 의 기본 JDK 가 25 로 바뀌어 Gradle 8.14 가 "Unsupported class file major version 69" 로
       # 죽었다(2026-10-24). 러너 기본값에 기대지 말고 pr-check.yml 과 같은 21 로 고정한다.
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '21'
           distribution: temurin
