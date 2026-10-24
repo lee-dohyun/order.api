@@ -61,7 +61,8 @@ class OrderControllerAdminRoleTest {
     @DisplayName("ORDER_MANAGER 는 관리자 주문 목록을 조회할 수 있다")
     void orderManagerCanList() throws Exception {
         givenStaffToken("ORDER_MANAGER");
-        given(orderService.getAllOrders()).willReturn(List.of());
+        given(orderService.searchAdminOrders(null, null, null, null, 0, 20))
+                .willReturn(new com.dh.order.dto.OrderDtos.AdminOrderPage(List.of(), 0, 20, 0, 0));
 
         mockMvc.perform(get("/api/orders").header("Authorization", BEARER))
                 .andExpect(status().isOk());
@@ -71,7 +72,8 @@ class OrderControllerAdminRoleTest {
     @DisplayName("SYSTEM_ADMIN 은 개별 역할이 없어도 조회할 수 있다")
     void systemAdminCanList() throws Exception {
         givenStaffToken("SYSTEM_ADMIN");
-        given(orderService.getAllOrders()).willReturn(List.of());
+        given(orderService.searchAdminOrders(null, null, null, null, 0, 20))
+                .willReturn(new com.dh.order.dto.OrderDtos.AdminOrderPage(List.of(), 0, 20, 0, 0));
 
         mockMvc.perform(get("/api/orders").header("Authorization", BEARER))
                 .andExpect(status().isOk());

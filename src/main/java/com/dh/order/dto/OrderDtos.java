@@ -121,7 +121,9 @@ public class OrderDtos {
             LocalDateTime createdAt,
             LocalDateTime paidAt,
             String guestToken,
-            List<com.dh.order.claim.ClaimDtos.ClaimResponse> claims) {
+            List<com.dh.order.claim.ClaimDtos.ClaimResponse> claims,
+            /** 주문 전체 환불 내역(gateway#329). 환불 전에는 null. 상품별 취소·반품 환불은 claims 에 있다. */
+            RefundResponse refund) {
     }
 
     public record CreateShipmentRequest(
@@ -166,5 +168,17 @@ public class OrderDtos {
             BigDecimal totalPrice,
             int itemCount,
             LocalDateTime createdAt) {
+    }
+
+    /**
+     * 관리자 주문 목록 한 페이지(gateway#329). {@code page} 는 0부터 센다. {@code totalElements} 는 검색 조건에 걸린
+     * 전체 건수다.
+     */
+    public record AdminOrderPage(
+            List<OrderAdminSummaryResponse> content,
+            int page,
+            int size,
+            long totalElements,
+            int totalPages) {
     }
 }

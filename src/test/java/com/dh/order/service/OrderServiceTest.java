@@ -273,7 +273,7 @@ class OrderServiceTest {
     void refundOrder_ShouldTransitionToRefunded_WhenStatusIsPaid() {
         order.setStatus(OrderStatus.PAID);
         Payment payment = new Payment(order, BigDecimal.valueOf(1000), "MOCK");
-        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(1L)).willReturn(Optional.of(order));
         given(paymentRepository.findByOrderId(1L)).willReturn(Optional.of(payment));
 
         RefundResponse response = orderService.refundOrder(1L, new RefundRequest("Customer request"));
@@ -288,7 +288,7 @@ class OrderServiceTest {
     @Test
     void refundOrder_ShouldThrowException_WhenStatusIsCreated() {
         order.setStatus(OrderStatus.CREATED);
-        given(orderRepository.findById(1L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(1L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.refundOrder(1L, new RefundRequest("Customer request")))
                 .isInstanceOf(IllegalStateException.class)
