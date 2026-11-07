@@ -7,6 +7,7 @@ import java.util.Optional;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -15,7 +16,8 @@ import jakarta.persistence.LockModeType;
 
 import com.dh.order.domain.Order;
 
-public interface OrderRepository extends JpaRepository<Order, Long> {
+/** 관리자 주문 검색은 {@link AdminOrderSearch} 를 {@link JpaSpecificationExecutor} 로 넘긴다(gateway#329). */
+public interface OrderRepository extends JpaRepository<Order, Long>, JpaSpecificationExecutor<Order> {
 
     /**
      * payOrder처럼 조회 직후 트랜잭션 밖에서 원격 HTTP 호출(재고 차감)을 거쳐야 하는 경로
@@ -62,8 +64,6 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
             """)
     List<Order> findMineBetween(@Param("customerId") String customerId, @Param("customerEmail") String customerEmail,
             @Param("from") LocalDateTime from, @Param("to") LocalDateTime to, Pageable pageable);
-
-    List<Order> findAllByOrderByCreatedAtDesc();
 
     /**
      * 회원별 구매확정 금액 합계. auth.api 의 등급 산정 배치가 클러스터 내부망으로 호출한다.

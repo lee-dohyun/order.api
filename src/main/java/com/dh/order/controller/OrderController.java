@@ -24,7 +24,6 @@ import com.dh.order.config.AdminJwtVerifier;
 import com.dh.order.config.AdminPrincipal;
 import com.dh.order.config.CustomerJwtVerifier;
 import com.dh.order.dto.OrderDtos.CreateShipmentRequest;
-import com.dh.order.dto.OrderDtos.OrderAdminSummaryResponse;
 import com.dh.order.dto.OrderDtos.OrderCreateRequest;
 import com.dh.order.dto.OrderDtos.OrderResponse;
 import com.dh.order.dto.OrderDtos.OrderSummaryResponse;
@@ -200,16 +199,27 @@ public class OrderController {
         return ResponseEntity.ok(orderService.getMyOrders(requester.userId(), requester.userEmail(), from, to, page, size));
     }
 
-    // admin.front(Keycloak staff realm 로그인) 전용 전체 주문 목록. Authorization 헤더의 토큰을 직접 검증한다.
+    /**
+     * admin.front(Keycloak staff realm 로그인) 전용 주문 목록 — 페이지 단위 + 상태·기간·검색어(gateway#329).
+     * Authorization 헤더의 토큰을 직접 검증한다. 검색어는 주문번호·주문자 이름·연락처·이메일에 건다.
+     */
     @GetMapping
-    public ResponseEntity<List<OrderAdminSummaryResponse>> getAll(
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+    public ResponseEntity<com.dh.order.dto.OrderDtos.AdminOrderPage> getAll(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam(value = "status", required = false) com.dh.order.domain.OrderStatus status,
+            @RequestParam(value = "from", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(value = "to", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(value = "q", required = false) String keyword,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size) {
         String adminEmail = verifyAdmin(authHeader);
         if (adminEmail == null) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        logger.info("admin order list viewed by {}", adminEmail);
-        return ResponseEntity.ok(orderService.getAllOrders());
+        // 검색어는 이름·연락처일 수 있어 로그에 남기지 않는다.
+        logger.info("admin order list viewed by {} (status={}, from={}, to={}, keyword={}, page={})",
+                adminEmail, status, from, to, keyword == null || keyword.isBlank() ? "없음" : "있음", page);
+        return ResponseEntity.ok(orderService.searchAdminOrders(status, from, to, keyword, page, size));
     }
 
     // 소유자(또는 게스트 토큰 보유자, 또는 admin)만 조회할 수 있다. 접근 불가면 404다 - 주문 ID가

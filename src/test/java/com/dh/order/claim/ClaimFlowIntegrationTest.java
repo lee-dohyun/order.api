@@ -413,4 +413,56 @@ class ClaimFlowIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM order_claims WHERE id = ?", String.class, requested.id()))
                 .isEqualTo("REQUESTED");
     }
+
+    // ------------------------------------------------------------------ 관리자 전체 환불 (gateway#329)
+
+    @Test
+    @DisplayName("전체 환불을 동시에 두 번 눌러도 환불은 한 건 — 두 번째는 이미 환불된 주문으로 거절된다")
+    void concurrentWholeRefundRefundsOnce() throws Exception {
+        order("PAID", null);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            List<java.util.concurrent.Future<Boolean>> results = new java.util.ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    try {
+                        orderService.refundOrder(orderId, new RefundRequest("고객 요청"));
+                        return true;
+                    } catch (IllegalStateException e) {
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+            int succeeded = 0;
+            for (var r : results) {
+                if (r.get(30, java.util.concurrent.TimeUnit.SECONDS)) succeeded++;
+            }
+            assertThat(succeeded).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM refunds", Integer.class)).isEqualTo(1);
+        assertThat(refundedTotal()).isEqualByComparingTo("49000");
+        assertThat(orderStatus()).isEqualTo("REFUNDED");
+    }
+
+    @Test
+    @DisplayName("전체 환불 뒤 주문 상세에 환불 금액·사유가 실린다 — 부분 취소로 돌려준 금액은 빠진다")
+    void orderDetailCarriesWholeRefund() {
+        order("PAID", null);
+        assertThat(orderService.getOrder(orderId, Requester.of(null, null, null, true)).refund()).isNull();
+
+        claimService.request(orderId, ME, cancel(itemB), null);
+        orderService.refundOrder(orderId, new RefundRequest("품절 안내 후 전체 환불"));
+
+        var refund = orderService.getOrder(orderId, Requester.of(null, null, null, true)).refund();
+        assertThat(refund).isNotNull();
+        assertThat(refund.reason()).isEqualTo("품절 안내 후 전체 환불");
+        assertThat(refund.amount().add(refundedTotal().subtract(refund.amount())))
+                .isEqualByComparingTo(refundedTotal());
+        assertThat(refundedTotal()).isEqualByComparingTo("49000");
+    }
 }

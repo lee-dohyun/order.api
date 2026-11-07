@@ -361,13 +361,31 @@ public class OrderService {
         return date.atStartOfDay(SHOP_ZONE).withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
     }
 
-    public List<OrderAdminSummaryResponse> getAllOrders() {
-        return orderRepository.findAllByOrderByCreatedAtDesc().stream()
-                .map(o -> new OrderAdminSummaryResponse(o.getId(), o.getCustomerEmail(), o.getOrdererName(),
-                        o.getOrdererPhone(), o.getStatus().name(), o.getTotalPrice(), o.getItems().size(),
-                        o.getCreatedAt()))
-                .toList();
+    /**
+     * 관리자 주문 목록(gateway#329) — 검색 조건에 걸린 주문을 최신순으로 한 페이지씩 준다. 전건을 한 번에 주던
+     * 예전 목록은 주문이 쌓이면 그대로 느려졌다. {@code from}/{@code to} 는 고객 목록과 같이 <b>한국 날짜</b>이고 양 끝을
+     * 포함한다.
+     */
+    public com.dh.order.dto.OrderDtos.AdminOrderPage searchAdminOrders(OrderStatus status, LocalDate from,
+            LocalDate to, String keyword, int page, int size) {
+        var search = new com.dh.order.repository.AdminOrderSearch(status,
+                from == null ? null : startOfKstDayInUtc(from),
+                to == null ? null : startOfKstDayInUtc(to.plusDays(1)),
+                keyword);
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_ADMIN_ORDERS_PAGE_SIZE),
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Order.desc("createdAt"),
+                        org.springframework.data.domain.Sort.Order.desc("id")));
+        var result = orderRepository.findAll(search.toSpecification(), pageable);
+        return new com.dh.order.dto.OrderDtos.AdminOrderPage(
+                result.getContent().stream()
+                        .map(o -> new OrderAdminSummaryResponse(o.getId(), o.getCustomerEmail(), o.getOrdererName(),
+                                o.getOrdererPhone(), o.getStatus().name(), o.getTotalPrice(), o.getItems().size(),
+                                o.getCreatedAt()))
+                        .toList(),
+                result.getNumber(), result.getSize(), result.getTotalElements(), result.getTotalPages());
     }
+
+    private static final int MAX_ADMIN_ORDERS_PAGE_SIZE = 100;
 
     /**
      * 실제 PG 연동 전까지의 mock 결제 - 재고 차감이 성공하면 항상 결제 성공 처리한다.
@@ -492,7 +510,10 @@ public class OrderService {
     /** admin이 환불 처리 - 결제가 존재하는 주문(PAID 이후)만 가능, 전액 환불만 지원한다. */
     @Transactional
     public RefundResponse refundOrder(Long orderId, RefundRequest request) {
-        Order order = orderRepository.findById(orderId)
+        // 주문 행 잠금(gateway#329). 상태 확인만으로는 동시에 두 번 들어온 환불이 둘 다 PAID 를 읽고 환불 행을 두 개 만든다
+        // (관리자 화면에서 버튼을 두 번 누른 경우 — 통합 테스트로 재현). 잠그면 두 번째는 REFUNDED 를 보고 거절된다.
+        // 출고 전 취소 확정(ClaimCommitter)·운송장 등록과 같은 잠금이라 그쪽과도 서로 기다린다.
+        Order order = orderRepository.findByIdForUpdate(orderId)
                 .orElseThrow(() -> new NoSuchElementException("order not found: " + orderId));
         if (order.getStatus() == OrderStatus.CREATED || order.getStatus() == OrderStatus.REFUNDED
                 || order.getStatus() == OrderStatus.CANCELLED) {
@@ -630,7 +651,11 @@ public class OrderService {
                 // 취소·반품 신청(gateway#320). 주문을 만든 직후에는 비어 있다.
                 order.getId() == null ? List.of()
                         : claimRepository.findByOrderIdWithItems(order.getId()).stream()
-                                .map(com.dh.order.claim.ClaimDtos.ClaimResponse::of).toList());
+                                .map(com.dh.order.claim.ClaimDtos.ClaimResponse::of).toList(),
+                // 주문 전체 환불(gateway#329). 관리자 상세와 고객 상세가 같이 쓴다 — 환불 안내 메일에 이미 금액·사유가 간다.
+                order.getId() == null ? null
+                        : refundRepository.findFirstByPaymentOrderIdOrderByIdDesc(order.getId())
+                                .map(r -> toRefundResponse(order, r)).orElse(null));
     }
 
     private RefundResponse toRefundResponse(Order order, Refund refund) {
